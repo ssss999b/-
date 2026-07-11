@@ -8,6 +8,7 @@
 #include "Motor.h"
 #include "MPU6050.h"
 #include "IMU.h"
+#include "KEY.h"
 
 /* =========================================================================
  * 任务标志位
@@ -16,50 +17,53 @@
  * 统一模式：ISR 管时间 → 置标志 → 主循环管执行
  * ========================================================================= */
 
-/* 程序运行的时间戳（s），TIM2 每 1s 递增 */
-uint32_t Timer_Bsp_t = 0;
+/* 程序运行的毫秒时间戳。
+ *
+ * TIM2 每 1ms 进入一次 Control_Task2_Callback()，这里每次 +1。
+ * 后面任务模式状态机需要用它做：
+ *   1. 几秒没按键后自动 READY；
+ *   2. TASK3 4 秒超时；
+ *   3. STM32 -> K230 UI 状态包重复发送间隔。
+ */
+volatile uint32_t Timer_Ms_t = 0U;
+
+/* 程序运行的时间戳（s），TIM2 每 1s 递增。
+ * 保留原变量，兼容你工程里其它可能使用 Timer_Bsp_t 的地方。
+ */
+volatile uint32_t Timer_Bsp_t = 0U;
 
 /* 串口数据包解析结果缓存（新包到达时自动刷新） */
 int16_t USART_Packet_Data[USART_PACKET_DATA_LEN] = {0};
 uint8_t USART_Packet_Count = 0;
 
 /* TIM2 分发：慢速外设任务 */
-volatile uint8_t nrf_task_flag   = 0U;   /* 100Hz NRF24L01 遥控通信 */
-volatile uint8_t qmc_task_flag   = 0U;   /* 50Hz  QMC5883P 磁力计   */
-volatile uint8_t bmp_task_flag   = 0U;   /* 20Hz  BMP280 气压计     */
-volatile uint8_t print_task_flag = 0U;   /* 10Hz  串口打印          */
+volatile uint8_t print_task_flag = 0U;   /* 10Hz  串口打印 */
+
+/* =========================================================================
+ * Control_Task_GetMillis
+ *
+ * 获取当前毫秒时间戳。
+ * STM32F407 是 32 位 MCU，对齐的 uint32_t 读写是原子的；
+ * 这里直接读取 volatile 变量即可。
+ * ========================================================================= */
+uint32_t Control_Task_GetMillis(void)
+{
+	return (uint32_t)Timer_Ms_t;
+}
 
 /* =========================================================================
  * Control_Task1_Callback — TIM1 (TIM3) 1ms ISR
  *
  * 职责：飞控心脏节拍
  *   - PID 控制 + 电机输出：500Hz（每 2ms）
- * 
+ *
+ * 当前瞄准项目暂时不在这里添加内容，避免影响其它控制任务。
  * ========================================================================= */
 void Control_Task1_Callback(API_TIM_Id_t id)
 {
-	static uint8_t  pid_2ms_tick = 0U;
-
 	if (id != API_TIM1)
 	{
 		return;
-	}
-
-	pid_2ms_tick++;
-
-	if (pid_2ms_tick >= 2U)
-	{
-		pid_2ms_tick = 0U;
-		/* IMU 偏航融合：陀螺积分 (500Hz) */
-		IMU_Yaw_IntegrateGyro((float)gyroz / GYRO_SENS_2000DPS, 0.002f);
-		if (Key == 1)
-		{
-			PID_Pitch_Roll_Combined(Pitch, Roll);  /* PID → 混控 → DShot_Write */
-		}
-		else
-		{
-			Motor_Test();  /* 未解锁时仍走电机状态机（处理掉电缓降） */
-		}
 	}
 }
 
@@ -68,50 +72,28 @@ void Control_Task1_Callback(API_TIM_Id_t id)
  *
  * 职责：所有非飞控周期任务的统一调度中心
  *
- *   1000ms → Timer_Bsp_t++     (1Hz  时间戳)
+ *   每 1ms  → Timer_Ms_t++      (毫秒时间戳)
+ *   每 1ms  → Key_Tick()        (按键扫描入口，内部再做 20ms 采样)
+ *   1000ms → Timer_Bsp_t++     (1Hz 秒级时间戳)
  *    100ms → print_task_flag   (10Hz 串口打印)
- *     50ms → bmp_task_flag     (20Hz 气压计)
- *     20ms → qmc_task_flag     (50Hz 磁力计)
- *     10ms → nrf_task_flag     (100Hz 遥控通信)
  *
  * 所有计数器和标志位集中在此，改频率只需改这若干个数字。
  * ========================================================================= */
 void Control_Task2_Callback(API_TIM_Id_t id)
 {
-	static uint8_t nrf_tick    = 0U;
-	static uint8_t qmc_tick    = 0U;
-	static uint8_t bmp_tick    = 0U;
 	static uint8_t printf_tick = 0U;
-	static uint16_t time_t     = 0U;
+	static uint16_t sec_tick = 0U;
 
 	if (id != API_TIM2)
 	{
 		return;
 	}
-	Key_Tick(); /* 按键扫描 */
-	/* ---- NRF24L01: 100Hz (每 10ms) ---- */
-	nrf_tick++;
-	if (nrf_tick >= 10U)
-	{
-		nrf_tick = 0U;
-		nrf_task_flag = 1U;
-	}
 
-	/* ---- QMC5883P: 50Hz (每 20ms) ---- */
-	qmc_tick++;
-	if (qmc_tick >= 20U)
-	{
-		qmc_tick = 0U;
-		qmc_task_flag = 1U;
-	}
+	/* ---- 1ms 毫秒时间戳 ---- */
+	Timer_Ms_t++;
 
-	/* ---- BMP280: 20Hz (每 50ms) ---- */
-	bmp_tick++;
-	if (bmp_tick >= 50U)
-	{
-		bmp_tick = 0U;
-		bmp_task_flag = 1U;
-	}
+	/* ---- 按键扫描：Key_Tick 内部会按 20ms 采样并消抖 ---- */
+	Key_Tick();
 
 	/* ---- printf: 10Hz (每 100ms) ---- */
 	printf_tick++;
@@ -121,11 +103,11 @@ void Control_Task2_Callback(API_TIM_Id_t id)
 		print_task_flag = 1U;
 	}
 
-	/* ---- 时间戳: 1Hz (每 1000ms) ---- */
-	time_t++;
-	if (time_t >= 1000U)
+	/* ---- 秒级时间戳: 1Hz (每 1000ms) ---- */
+	sec_tick++;
+	if (sec_tick >= 1000U)
 	{
-		time_t = 0U;
+		sec_tick = 0U;
 		Timer_Bsp_t++;
 	}
 }
@@ -141,9 +123,12 @@ void Control_Task_USART_Callback(API_USART_Id_t id)
 {
 	uint32_t data;
 	uint8_t rxValid;
+
 	data = 0U;
 	rxValid = 0U;
+
 	usart_irq_dispatch_by_id(id, &data, &rxValid);
+
 	if (rxValid != 0U)
 	{
 		if (id == API_USART3)

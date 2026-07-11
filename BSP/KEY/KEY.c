@@ -7,12 +7,27 @@ static uint8_t s_keyConfigCount;
 
 /* Key_Num：按键扫描完成后暂存的一次有效键值。
  * 仅在按键事件稳定后写入，读取后会自动清空。
+ *
+ * 注意：
+ *   Key_Num 在 Key_Tick() 中写入，而 Key_GetNum()/KEY_GetEvent()
+ *   通常在主循环中读取，所以这里加 volatile，避免编译器优化导致主循环读不到最新值。
  */
-static uint8_t Key_Num;
-/* Key：对外暴露的当前最新按键值。
- * 用于主循环或其他模块直接读取按键事件结果。
+static volatile uint8_t Key_Num;
+
+/* Key：对外暴露的当前最新按键事件。
+ *
+ * 说明：
+ *   0 = 本次没有新的按键事件
+ *   1 = KEY1 释放后产生的一次事件
+ *   2 = KEY2 释放后产生的一次事件
+ *   3 = KEY3 释放后产生的一次事件
+ *   4 = KEY4 释放后产生的一次事件
+ *
+ * 注意：
+ *   这是“一次性事件”，不是累计计数。
+ *   每次主循环调用 key_Get() 后，如果没有新事件，Key 会被置 0。
  */
-uint8_t Key = 0; /* 按键键值 */
+volatile uint8_t Key = 0U;
 
 /* 按键扫描内部状态：用于消抖和状态变化检测。 */
 #define KEY_DEBOUNCE_COUNT 3U		   /* 消抖计数 */
@@ -44,13 +59,15 @@ static const KEY_Config_t *KEY_GetConfig(uint8_t index)
 static uint8_t Key_GetNum(void)
 {
 	uint8_t Temp;
-	if (Key_Num)
+
+	if (Key_Num != 0U)
 	{
-		Temp = Key_Num;
-		Key_Num = 0;
+		Temp = (uint8_t)Key_Num;
+		Key_Num = 0U;
 		return Temp;
 	}
-	return 0;
+
+	return 0U;
 }
 
 /*
@@ -128,9 +145,15 @@ void KEY_Init(void)
 
 /*
  * Key_Tick：按键扫描函数。
- * 该函数周期调用，内部按 20 次 tick 作为一次采样周期，
- * 通过 KEY_DEBOUNCE_COUNT 做连续稳定检测。
- * 只有按键从按下->释放的稳定变化，才会产生一次按键事件。
+ *
+ * 调用位置：
+ *   放在 1ms 定时器回调里周期调用。
+ *
+ * 内部逻辑：
+ *   1. 每 20 次 tick 采样一次，也就是约 20ms 采样一次；
+ *   2. 通过 KEY_DEBOUNCE_COUNT 做连续稳定检测；
+ *   3. 只有按键从“按下”稳定变为“释放”时，才产生一次按键事件；
+ *   4. 长按不重复上报，松开时只上报一次。
  */
 void Key_Tick(void)
 {
@@ -159,7 +182,8 @@ void Key_Tick(void)
 		s_keyDebounceCount = 1U;
 	}
 
-	if ((s_keyDebounceCount >= KEY_DEBOUNCE_COUNT) && (s_keyLastRawState != s_keyStableState))
+	if ((s_keyDebounceCount >= KEY_DEBOUNCE_COUNT) &&
+	    (s_keyLastRawState != s_keyStableState))
 	{
 		s_keyPrevStableState = s_keyStableState;
 		s_keyStableState = s_keyLastRawState;
@@ -173,17 +197,36 @@ void Key_Tick(void)
 }
 
 /*
- * key_Get：把扫描得到的按键值同步到全局 Key。
- * 该函数从内部按键事件缓存读取一次结果，并写入全局 Key。
+ * KEY_GetEvent：读取一次按键事件。
+ *
+ * 返回值：
+ *   0 = 没有新的按键事件
+ *   1 = KEY1
+ *   2 = KEY2
+ *   3 = KEY3
+ *   4 = KEY4
+ *
+ * 读取后会自动清空事件。
+ * 后面做任务状态机时，建议优先使用这个函数，而不是直接判断全局 Key。
+ */
+uint8_t KEY_GetEvent(void)
+{
+	return Key_GetNum();
+}
+
+/*
+ * key_Get：把扫描得到的按键事件同步到全局 Key。
+ *
+ * 重要变化：
+ *   旧版是 Key = Key + 1；
+ *   现在改为一次性事件：
+ *
+ *      有新按键事件：Key = 1/2/3/4
+ *      没有新事件  ：Key = 0
+ *
+ * 这样后面做 FIND / TASK2 / TASK3 状态机时不会被累计计数干扰。
  */
 void key_Get(void)
 {
-	static uint8_t KeyNum = 0;
-
-	KeyNum = Key_GetNum();
-	if (KeyNum)
-	{
-		Key = Key+1 ;
-		KeyNum = 0;
-	}
+	Key = KEY_GetEvent();
 }

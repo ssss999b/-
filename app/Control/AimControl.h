@@ -33,6 +33,21 @@ void AimControl_Update(int16_t target_x,
  */
 void AimControl_Reset(void);
 
+/* 设置是否允许自动开激光。
+ *
+ * allowed = 0：
+ *   强制关闭激光。FIND 模式用这个状态。
+ *
+ * allowed != 0：
+ *   允许 AimControl_Update() 在对准稳定后自动开激光。
+ */
+void AimControl_SetLaserAllowed(uint8_t allowed);
+
+/* 安全停止：
+ *   停止 X/Y 电机，关闭激光，清 PID / 卡尔曼 / 计数器。
+ */
+void AimControl_Stop(void);
+
 #ifdef __cplusplus
 }
 #endif

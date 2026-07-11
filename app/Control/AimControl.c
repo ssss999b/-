@@ -40,13 +40,13 @@
 #define AIM_PID_DT_S             (0.018f)
 
 /* X 轴 PID 参数 */
-#define AIM_X_KP                 (0.03f)
-#define AIM_X_KI                 (0.20f)
+#define AIM_X_KP                 (0.008f)  //0.008f
+#define AIM_X_KI                 (0.002f)  //0.002f
 #define AIM_X_KD                 (0.00f)
 
 /* Y 轴 PID 参数 */
-#define AIM_Y_KP                 (0.012f)
-#define AIM_Y_KI                 (0.15f)
+#define AIM_Y_KP                 (0.01f)
+#define AIM_Y_KI                 (0.002f)
 #define AIM_Y_KD                 (0.00f)
 
 /* 像素死区：
@@ -57,7 +57,7 @@
 
 /* 单次相对运动角度限制 */
 #define AIM_OUT_MAX_DEG          (360.00f)
-#define AIM_MIN_STEP_DEG         (0.15f)
+#define AIM_MIN_STEP_DEG         (0.001f)
 
 /* 步进电机运动参数 */
 #define AIM_RPM                  12U
@@ -135,8 +135,8 @@
 #define AIM_LASER_OFF_LEVEL          LED_LOW
 
 /* 激光开启判定误差阈值，单位：像素 */
-#define AIM_LASER_ALIGN_X_PX         3
-#define AIM_LASER_ALIGN_Y_PX         3
+#define AIM_LASER_ALIGN_X_PX         5
+#define AIM_LASER_ALIGN_Y_PX         5
 
 /* 连续多少帧都对准后，才真正打开激光 */
 #define AIM_LASER_STABLE_COUNT       5U
@@ -150,6 +150,30 @@
  * 调 PID 时建议保持 0，只保留低频状态打印。
  */
 #define AIM_MOVE_DEBUG_ENABLE    0U
+
+/* PID 调参专用打印：
+ * 1：打开 [PID_X] 打印
+ * 0：关闭 [PID_X] 打印
+ *
+ * 打印内容：
+ *   ref_x      = X轴目标值
+ *   target_x   = X轴实际值
+ *   x_angle    = X轴最终 PID 输出角度，单位用毫度打印
+ */
+#define AIM_PID_X_DEBUG_ENABLE       1U
+#define AIM_PID_X_DEBUG_DIV          5U
+
+/* 旧的 AimControl 串口打印总开关：
+ * 0：关闭原来的 [AIM] Init / laser / 状态 等打印，只保留 [PID_X]
+ * 1：恢复旧的 [AIM] 打印
+ */
+#define AIM_OLD_UART4_LOG_ENABLE     0U
+
+#if (AIM_OLD_UART4_LOG_ENABLE != 0U)
+#define AIM_OLD_DEBUG_PRINTF(...)    AIM_OLD_DEBUG_PRINTF( __VA_ARGS__)
+#else
+#define AIM_OLD_DEBUG_PRINTF(...)    do { } while (0)
+#endif
 
 /* ============================================================
  * 二状态卡尔曼滤波器结构体
@@ -211,6 +235,15 @@ static float s_last_y_angle = 0.0f;
 static uint8_t s_laser_on = 0U;
 static uint8_t s_laser_align_cnt = 0U;
 
+/* 激光允许标志。
+ *
+ * 1：允许 aim_laser_update() 根据误差稳定情况自动开激光；
+ * 0：强制禁止开激光。即使已经对准，也会保持关闭。
+ *
+ * 第四步 FIND 模式会把它设为 0，用于“云台跟踪但不开激光”的安全测试。
+ */
+static uint8_t s_laser_allowed = 0U;
+
 
 /* ============================================================
  * 内部辅助函数
@@ -247,7 +280,7 @@ static void aim_laser_set(uint8_t on)
             s_laser_on = 1U;
 
 #if (AIM_DEBUG_ENABLE != 0U)
-            usart_printf(AIM_DEBUG_UART, "[AIM] laser ON\r\n");
+            AIM_OLD_DEBUG_PRINTF( "[AIM] laser ON\r\n");
 #endif
         }
     }
@@ -259,7 +292,7 @@ static void aim_laser_set(uint8_t on)
             s_laser_on = 0U;
 
 #if (AIM_DEBUG_ENABLE != 0U)
-            usart_printf(AIM_DEBUG_UART, "[AIM] laser OFF\r\n");
+            AIM_OLD_DEBUG_PRINTF( "[AIM] laser OFF\r\n");
 #endif
         }
     }
@@ -279,6 +312,16 @@ static void aim_laser_set(uint8_t on)
 static void aim_laser_update(int16_t ex, int16_t ey, int16_t status)
 {
 #if (AIM_LASER_ENABLE != 0U)
+    /* FIND 模式 / SAFE 状态下会禁止激光。
+     * 只要 s_laser_allowed = 0，就算误差已经满足阈值，也绝不打开激光。
+     */
+    if (s_laser_allowed == 0U)
+    {
+        s_laser_align_cnt = 0U;
+        aim_laser_set(0U);
+        return;
+    }
+
     if (status == 0)
     {
         s_laser_align_cnt = 0U;
@@ -545,7 +588,7 @@ static uint8_t aim_check_ref_changed(int16_t ref_x, int16_t ref_y)
         AimControl_Reset();
 
 #if (AIM_DEBUG_ENABLE != 0U)
-        usart_printf(AIM_DEBUG_UART,
+        AIM_OLD_DEBUG_PRINTF(
                      "[AIM] ref changed, reset PID old:%d,%d new:%d,%d\r\n",
                      s_last_ref_x,
                      s_last_ref_y,
@@ -577,6 +620,18 @@ static void aim_debug_print(int16_t target_x,
                             float x_angle,
                             float y_angle)
 {
+    (void)target_x;
+    (void)target_y;
+    (void)ref_x;
+    (void)ref_y;
+    (void)ex;
+    (void)ey;
+    (void)status;
+    (void)ex_f;
+    (void)ey_f;
+    (void)x_angle;
+    (void)y_angle;
+
 #if (AIM_DEBUG_ENABLE != 0U)
     s_debug_div_cnt++;
     if (s_debug_div_cnt < AIM_DEBUG_DIV)
@@ -585,7 +640,7 @@ static void aim_debug_print(int16_t target_x,
     }
     s_debug_div_cnt = 0U;
 
-    usart_printf(AIM_DEBUG_UART,
+    AIM_OLD_DEBUG_PRINTF(
                  "[AIM] T:%d,%d R:%d,%d E:%d,%d F:%.1f,%.1f S:%d X:%.2f Y:%.2f\r\n",
                  target_x,
                  target_y,
@@ -637,6 +692,53 @@ void AimControl_Reset(void)
     aim_laser_set(0U);
 }
 
+/* 设置是否允许自动开激光。
+ *
+ * allowed = 0：
+ *   强制关闭激光，并清除连续对准计数。
+ *
+ * allowed != 0：
+ *   允许 AimControl_Update() 在误差稳定后自动开激光。
+ *
+ * 第四步只接入 FIND 模式，所以 main.c 会调用 AimControl_SetLaserAllowed(0U)。
+ */
+void AimControl_SetLaserAllowed(uint8_t allowed)
+{
+    if (allowed != 0U)
+    {
+        s_laser_allowed = 1U;
+    }
+    else
+    {
+        s_laser_allowed = 0U;
+        s_laser_align_cnt = 0U;
+        aim_laser_set(0U);
+    }
+}
+
+/* 安全停止：
+ *   1. 停止 X/Y 电机；
+ *   2. 禁止并关闭激光；
+ *   3. 清 PID / 卡尔曼 / 计数器。
+ *
+ * main.c 进入 SAFE、离开 RUNNING 时调用。
+ */
+void AimControl_Stop(void)
+{
+    if (s_motor_x_ok != 0U)
+    {
+        (void)Stepmotor_Stop(AIM_MOTOR_X);
+    }
+
+    if (s_motor_y_ok != 0U)
+    {
+        (void)Stepmotor_Stop(AIM_MOTOR_Y);
+    }
+
+    AimControl_SetLaserAllowed(0U);
+    AimControl_Reset();
+}
+
 /* 瞄准控制初始化 */
 void AimControl_Init(void)
 {
@@ -656,7 +758,10 @@ void AimControl_Init(void)
     s_last_x_angle = 0.0f;
     s_last_y_angle = 0.0f;
 
-    /* 上电初始化时，先强制关闭激光，避免误亮 */
+    /* 上电初始化时，先强制关闭激光，避免误亮。
+     * 默认禁止激光，只有后续 TASK2/TASK3 正式接入时才会允许。
+     */
+    s_laser_allowed = 0U;
     s_laser_on = 0U;
     s_laser_align_cnt = 0U;
     LED_Control(AIM_LASER_ID, AIM_LASER_OFF_LEVEL);
@@ -668,19 +773,19 @@ void AimControl_Init(void)
     aim_pid_setup(&s_pid_y, AIM_Y_KP, AIM_Y_KI, AIM_Y_KD, AIM_DEADBAND_Y_PX);
 
 #if (AIM_DEBUG_ENABLE != 0U)
-    usart_printf(AIM_DEBUG_UART, "[AIM] Init start\r\n");
+    AIM_OLD_DEBUG_PRINTF( "[AIM] Init start\r\n");
 #endif
 
     /* 扫描并使能 X 轴电机 */
     e = Stepmotor_SelfTest(AIM_MOTOR_X);
 #if (AIM_DEBUG_ENABLE != 0U)
-    usart_printf(AIM_DEBUG_UART, "[AIM] X scan:%s\r\n", (e == MOTOR_OK) ? "FOUND" : "none");
+    AIM_OLD_DEBUG_PRINTF( "[AIM] X scan:%s\r\n", (e == MOTOR_OK) ? "FOUND" : "none");
 #endif
     if (e == MOTOR_OK)
     {
         e = Stepmotor_Enable(AIM_MOTOR_X);
 #if (AIM_DEBUG_ENABLE != 0U)
-        usart_printf(AIM_DEBUG_UART, "[AIM] X enable=%d st=0x%02X\r\n",
+        AIM_OLD_DEBUG_PRINTF( "[AIM] X enable=%d st=0x%02X\r\n",
                      (int)e,
                      Stepmotor_ReadStatus(AIM_MOTOR_X));
 #endif
@@ -693,13 +798,13 @@ void AimControl_Init(void)
     /* 扫描并使能 Y 轴电机 */
     e = Stepmotor_SelfTest(AIM_MOTOR_Y);
 #if (AIM_DEBUG_ENABLE != 0U)
-    usart_printf(AIM_DEBUG_UART, "[AIM] Y scan:%s\r\n", (e == MOTOR_OK) ? "FOUND" : "none");
+    AIM_OLD_DEBUG_PRINTF( "[AIM] Y scan:%s\r\n", (e == MOTOR_OK) ? "FOUND" : "none");
 #endif
     if (e == MOTOR_OK)
     {
         e = Stepmotor_Enable(AIM_MOTOR_Y);
 #if (AIM_DEBUG_ENABLE != 0U)
-        usart_printf(AIM_DEBUG_UART, "[AIM] Y enable=%d st=0x%02X\r\n",
+        AIM_OLD_DEBUG_PRINTF( "[AIM] Y enable=%d st=0x%02X\r\n",
                      (int)e,
                      Stepmotor_ReadStatus(AIM_MOTOR_Y));
 #endif
@@ -710,7 +815,7 @@ void AimControl_Init(void)
     }
 
 #if (AIM_DEBUG_ENABLE != 0U)
-    usart_printf(AIM_DEBUG_UART, "[AIM] Init done X=%d Y=%d\r\n",
+    AIM_OLD_DEBUG_PRINTF( "[AIM] Init done X=%d Y=%d\r\n",
                  s_motor_x_ok,
                  s_motor_y_ok);
 #endif
@@ -760,7 +865,7 @@ void AimControl_Update(int16_t target_x,
             s_lost_stopped = 1U;
 
 #if (AIM_DEBUG_ENABLE != 0U)
-            usart_printf(AIM_DEBUG_UART, "[AIM] target lost, stop\r\n");
+            AIM_OLD_DEBUG_PRINTF( "[AIM] target lost, stop\r\n");
 #endif
         }
 
@@ -818,6 +923,31 @@ void AimControl_Update(int16_t target_x,
     s_last_x_angle = x_angle;
     s_last_y_angle = y_angle;
 
+
+#if (AIM_DEBUG_ENABLE != 0U) && (AIM_PID_X_DEBUG_ENABLE != 0U)
+    {
+        static uint8_t s_pid_y_debug_div_cnt = 0U;
+        int32_t y_out_mdeg;
+
+        s_pid_y_debug_div_cnt++;
+        if (s_pid_y_debug_div_cnt >= AIM_PID_X_DEBUG_DIV)
+        {
+            s_pid_y_debug_div_cnt = 0U;
+
+            /* y_angle 是已经经过限幅、斜率限制、最小步进补偿后的最终输出。
+             * 单位换成 0.001° 打印，避免 printf 浮点支持问题。
+             */
+            y_out_mdeg = (int32_t)(y_angle * 1000.0f);
+
+            usart_printf(AIM_DEBUG_UART,
+                         "[PID_Y] ref=%d target=%d out_mdeg=%ld\r\n",
+                         (int)ref_y,
+                         (int)target_y,
+                         (long)y_out_mdeg);
+        }
+    }
+#endif
+
     /* 给 X 轴发送相对运动命令 */
     if ((x_angle != 0.0f) && (s_motor_x_ok != 0U))
     {
@@ -828,7 +958,7 @@ void AimControl_Update(int16_t target_x,
                                  AIM_MOTOR_MODE);
 
 #if (AIM_DEBUG_ENABLE != 0U) && (AIM_MOVE_DEBUG_ENABLE != 0U)
-        usart_printf(AIM_DEBUG_UART,
+        AIM_OLD_DEBUG_PRINTF(
                      "[AIM] MoveX ret=%d angle=%.2f\r\n",
                      (int)x_cmd,
                      (double)x_angle);
@@ -845,7 +975,7 @@ void AimControl_Update(int16_t target_x,
                                  AIM_MOTOR_MODE);
 
 #if (AIM_DEBUG_ENABLE != 0U) && (AIM_MOVE_DEBUG_ENABLE != 0U)
-        usart_printf(AIM_DEBUG_UART,
+        AIM_OLD_DEBUG_PRINTF(
                      "[AIM] MoveY ret=%d angle=%.2f\r\n",
                      (int)y_cmd,
                      (double)y_angle);

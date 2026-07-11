@@ -7,7 +7,8 @@
  * KEY 模块说明：
  * 1) 通过 Enroll 层注册板级按键资源；
  * 2) BSP 层只关心“哪个键对应哪个 GPIO”；
- * 3) 扫描函数 Key_Tick() 仍然保留，便于放到定时器中断里做轮询消抖。
+ * 3) Key_Tick() 放到 1ms 定时器回调中周期调用；
+ * 4) key_Get()/KEY_GetEvent() 在主循环中读取“一次性按键事件”。
  */
 
 #ifdef __cplusplus
@@ -57,23 +58,48 @@ typedef struct
  * configTable：按键配置数组，count 为按键数量。
  */
 void KEY_Register(const KEY_Config_t *configTable, uint8_t count);
+
 /* BSP 层初始化：把已注册的按键配置成可读取状态。
  * 这包括按键 GPIO 的输入模式配置以及按键状态清理。
  */
 void KEY_Init(void);
-/* 按键扫描函数，建议放到定时器中断里周期调用。
+
+/* 按键扫描函数，建议放到 1ms 定时器中断里周期调用。
  * 本函数内部做按键消抖，并在按键释放后产生一次按键事件。
  */
 void Key_Tick(void);
+
+/* 读取一次按键事件。
+ *
+ * 返回值：
+ *   0 = 无按键事件
+ *   1 = KEY1
+ *   2 = KEY2
+ *   3 = KEY3
+ *   4 = KEY4
+ *
+ * 读取后会自动清空事件，避免重复触发。
+ */
+uint8_t KEY_GetEvent(void);
+
 /* 将扫描得到的按键事件同步到全局 Key 变量。
- * 该函数可在主循环中调用，用于把按键事件转成全局变量供其他模块读取。
+ *
+ * 注意：
+ *   这是一次性事件同步，不是累计计数。
+ *   每次调用后：
+ *     有新事件 -> Key = 1/2/3/4
+ *     无新事件 -> Key = 0
  */
 void key_Get(void);
 
-/* 当前最新按键值。
+/* 当前最新按键事件。
  * 0 = 无按键事件；1 = KEY1；2 = KEY2；3 = KEY3；4 = KEY4。
+ *
+ * 注意：
+ *   Key 在主循环调用 key_Get() 后刷新。
+ *   因为按键事件由定时器中断产生，所以这里使用 volatile。
  */
-extern uint8_t Key;
+extern volatile uint8_t Key;
 
 #ifdef __cplusplus
 }

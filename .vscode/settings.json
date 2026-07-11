@@ -19,5 +19,12 @@
         "Middlewares/FreeRTOS-LTS": true,
         "Middlewares/ST/STM32_USB_Device_Library": true,
         "Drivers/Drivers_M0G3507/source": true
+    },
+    "python.analysis.extraPaths": [
+        "C:\\Users\\86176\\.kendryte\\k230_canmv_stubs\\db23dc421c63b6f6b3010fd16ad3ac8db57c6f83"
+    ],
+    "python.analysis.stubPath": "C:\\Users\\86176\\.kendryte\\k230_canmv_pylance\\e60cb862ff31fae5\\typings",
+    "python.analysis.diagnosticSeverityOverrides": {
+        "reportMissingModuleSource": "none"
     }
 }
