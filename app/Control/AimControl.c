@@ -41,12 +41,12 @@
 
 /* X 轴 PID 参数 */
 #define AIM_X_KP                 (0.008f)  //0.008f
-#define AIM_X_KI                 (0.002f)  //0.002f
+#define AIM_X_KI                 (0.003f)  //0.002f
 #define AIM_X_KD                 (0.00f)
 
 /* Y 轴 PID 参数 */
 #define AIM_Y_KP                 (0.01f)
-#define AIM_Y_KI                 (0.002f)
+#define AIM_Y_KI                 (0.003f)
 #define AIM_Y_KD                 (0.00f)
 
 /* 像素死区：
@@ -135,8 +135,8 @@
 #define AIM_LASER_OFF_LEVEL          LED_LOW
 
 /* 激光开启判定误差阈值，单位：像素 */
-#define AIM_LASER_ALIGN_X_PX         5
-#define AIM_LASER_ALIGN_Y_PX         5
+#define AIM_LASER_ALIGN_X_PX         7
+#define AIM_LASER_ALIGN_Y_PX         7
 
 /* 连续多少帧都对准后，才真正打开激光 */
 #define AIM_LASER_STABLE_COUNT       5U
