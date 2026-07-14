@@ -55,7 +55,7 @@
 #define MAIN_UART4_LOG_ENABLE    0U
 
 #if (MAIN_UART4_LOG_ENABLE != 0U)
-#define MAIN_UART4_PRINTF(...)   MAIN_UART4_PRINTF( __VA_ARGS__)
+#define MAIN_UART4_PRINTF(...)   usart_printf(USART4, __VA_ARGS__)
 #else
 #define MAIN_UART4_PRINTF(...)   do { } while (0)
 #endif
@@ -96,10 +96,11 @@
  * 模式：
  *   FIND  ：后续用于“跟踪靶心但不开激光”的校准/测试模式
  *   TASK2 ：后续用于任务2，稳定对准后开激光
- *   TASK3 ：后续用于任务3，二维搜索 + 快速锁定 + 开激光
+ *   TASK3 ：后续用于任务3，搜索后切到 TASK2 打靶
+ *   TASK4 ：发挥部分，小车运动时连续跟踪打靶，激光锁存常亮
  *
  * 状态：
- *   SELECT  ：模式选择中，按键循环切换 FIND -> TASK2 -> TASK3 -> FIND
+ *   SELECT  ：模式选择中，按键循环切换 FIND -> TASK2 -> TASK3 -> TASK4 -> FIND
  *   READY   ：几秒没按键后自动进入，等待再次按键启动
  *   RUNNING ：当前任务运行中；本步骤 FIND/TASK2 会控制云台
  *   SAFE    ：安全停止状态；会停止电机并关闭激光
@@ -108,7 +109,8 @@ typedef enum
 {
 	MAIN_AIM_MODE_FIND  = 0U,
 	MAIN_AIM_MODE_TASK2 = 2U,
-	MAIN_AIM_MODE_TASK3 = 3U
+	MAIN_AIM_MODE_TASK3 = 3U,
+	MAIN_AIM_MODE_TASK4 = 4U
 } MainAimMode_t;
 
 typedef enum
@@ -136,6 +138,7 @@ typedef enum
  *   0 = FIND
  *   2 = TASK2
  *   3 = TASK3
+ *   4 = TASK4
  *
  * state:
  *   0 = SELECT
@@ -147,6 +150,7 @@ typedef enum
  *   u0,0e  FIND SELECT
  *   u2,1e  TASK2 READY
  *   u3,2e  TASK3 RUNNING
+ *   u4,2e  TASK4 RUNNING
  *
  * 注意：
  *   这里只在状态变化时发送，不在每一帧发送，避免占用 USART3。
@@ -198,8 +202,8 @@ typedef enum
  *   如果还是太快：8 -> 6 -> 5
  *   如果太慢但能识别：8 -> 10 -> 12
  */
-#define TASK3_X_SEARCH_ANGLE_DEG           (420.0f)
-#define TASK3_X_SEARCH_RPM                 1U
+#define TASK3_X_SEARCH_ANGLE_DEG           (-2160.0f)
+#define TASK3_X_SEARCH_RPM                 6U
 
 #define TASK3_SEARCH_TIMEOUT_MS            12000U
 
@@ -221,6 +225,7 @@ static MainAimMode_t s_main_ui_mode = MAIN_AIM_MODE_FIND;
 static MainUiState_t s_main_ui_state = MAIN_UI_SELECT;
 static uint32_t s_main_ui_last_key_ms = 0U;
 
+#if (MAIN_UART4_LOG_ENABLE != 0U)
 static const char *MainUi_ModeName(MainAimMode_t mode)
 {
 	switch (mode)
@@ -231,6 +236,8 @@ static const char *MainUi_ModeName(MainAimMode_t mode)
 		return "TASK2";
 	case MAIN_AIM_MODE_TASK3:
 		return "TASK3";
+	case MAIN_AIM_MODE_TASK4:
+		return "TASK4";
 	default:
 		return "UNKNOWN";
 	}
@@ -253,6 +260,8 @@ static const char *MainUi_StateName(MainUiState_t state)
 	}
 }
 
+#endif
+
 static MainAimMode_t MainUi_NextMode(MainAimMode_t mode)
 {
 	switch (mode)
@@ -262,6 +271,8 @@ static MainAimMode_t MainUi_NextMode(MainAimMode_t mode)
 	case MAIN_AIM_MODE_TASK2:
 		return MAIN_AIM_MODE_TASK3;
 	case MAIN_AIM_MODE_TASK3:
+		return MAIN_AIM_MODE_TASK4;
+	case MAIN_AIM_MODE_TASK4:
 	default:
 		return MAIN_AIM_MODE_FIND;
 	}
@@ -304,6 +315,9 @@ static uint8_t Main_WaitOneDriverReady(uint8_t motor_id,
                                        const char *motor_name,
                                        uint32_t timeout_ms)
 {
+#if (MAIN_UART4_LOG_ENABLE == 0U)
+	(void)motor_name;
+#endif
 	uint32_t start_ms;
 	uint32_t last_print_ms;
 	MotorErrCode e;
@@ -418,6 +432,9 @@ static uint32_t s_task3_found_delay_start_ms = 0U;
 
 static void Task3Search_Cancel(const char *reason)
 {
+#if (MAIN_UART4_LOG_ENABLE == 0U)
+	(void)reason;
+#endif
 	if ((s_task3_search_state == TASK3_SEARCH_RUNNING) ||
 	    (s_task3_search_state == TASK3_FOUND_DELAY) ||
 	    (s_task3_search_state == TASK3_FOUND_SWITCHED))
@@ -601,8 +618,9 @@ static void Task3Search_Update(void)
 			s_main_ui_state = MAIN_UI_RUNNING;
 			s_main_ui_last_key_ms = now;
 
-			AimControl_SetLaserAllowed(1U);
+			AimControl_SetTask4Mode(0U);
 			AimControl_Reset();
+			AimControl_SetLaserAllowed(1U);
 
 			MainUi_SendToK230();
 
@@ -617,6 +635,9 @@ static void Task3Search_Update(void)
 
 static void MainUi_Print(const char *reason)
 {
+#if (MAIN_UART4_LOG_ENABLE == 0U)
+	(void)reason;
+#endif
 	MAIN_UART4_PRINTF(
 	             "[UI] %s %s, ms=%lu, reason=%s\r\n",
 	             MainUi_ModeName(s_main_ui_mode),
@@ -636,6 +657,7 @@ static void MainUi_Print(const char *reason)
  *   TASK2 RUNNING：云台跟踪靶心，对准稳定后允许自动开激光；
  *   TASK3 RUNNING：Y 轴保持上电固定零点，X 轴开始搜索，找到目标后停止，延时后自动切到 TASK2 RUNNING。
  */
+static void MainUi_EnterSafe(const char *reason);
 static void MainUi_StartCurrentMode(void)
 {
 	s_main_ui_state = MAIN_UI_RUNNING;
@@ -645,10 +667,8 @@ static void MainUi_StartCurrentMode(void)
 	{
 		Task3Search_Cancel("START_FIND");
 
-		/* FIND 模式用于平时测试和校准：
-		 *   - 允许 AimControl_Update() 控制 X/Y 云台跟踪靶心；
-		 *   - 但强制禁止激光打开。
-		 */
+		/* FIND：只跟踪，不允许激光。 */
+		AimControl_SetTask4Mode(0U);
 		AimControl_SetLaserAllowed(0U);
 		AimControl_Reset();
 
@@ -659,30 +679,47 @@ static void MainUi_StartCurrentMode(void)
 	{
 		Task3Search_Cancel("START_TASK2");
 
-		/* TASK2 模式：
-		 *   - 使用当前 AimControl.c 中已经调好的任务2参数；
-		 *   - 允许 AimControl_Update() 控制 X/Y 云台跟踪靶心；
-		 *   - 允许对准稳定后自动打开激光。
+		/* TASK2：普通定点打靶。
+		 * 激光逻辑保持原来方式：对准稳定才开，偏离/丢失会关。
 		 */
-		AimControl_SetLaserAllowed(1U);
+		AimControl_SetTask4Mode(0U);
 		AimControl_Reset();
+		AimControl_SetLaserAllowed(1U);
 
 		MAIN_UART4_PRINTF(
-		             "[UI] TASK2 RUNNING: tracking enabled, laser allowed.\r\n");
+		             "[UI] TASK2 RUNNING: tracking enabled, laser stable-only.\r\n");
 	}
-	else
+	else if (s_main_ui_mode == MAIN_AIM_MODE_TASK3)
 	{
-		/* 第七步 TASK3：
-		 *   - 关闭激光；
-		 *   - Y 轴保持上电 GoHome 后的固定零点；
-		 *   - X 轴相对旋转 420° 搜索；
-		 *   - 识别到目标后停止电机；
-		 *   - 本步骤不锁定、不打开激光。
-		 */
+		/* TASK3：搜索到靶纸后延时自动切到 TASK2 RUNNING。 */
+		AimControl_SetTask4Mode(0U);
 		Task3Search_Start();
 
 		MAIN_UART4_PRINTF(
 		             "[UI] TASK3 RUNNING: search only, found -> delay -> TASK2 RUNNING.\r\n");
+	}
+	else if (s_main_ui_mode == MAIN_AIM_MODE_TASK4)
+	{
+		Task3Search_Cancel("START_TASK4");
+
+		/* TASK4：发挥部分。
+		 *   - 不搜索，启动时靶纸应已在 K230 画面内；
+		 *   - 使用现有 PID + 二状态卡尔曼持续跟踪；
+		 *   - 初次开激光条件与 TASK2 相同；
+		 *   - 一旦激光打开，进入锁存常亮；
+		 *   - 之后 status 短暂丢失/误差变大，都不自动关激光；
+		 *   - 只有 SAFE / 退出任务才关激光。
+		 */
+		AimControl_SetTask4Mode(1U);
+		AimControl_Reset();
+		AimControl_SetLaserAllowed(1U);
+
+		MAIN_UART4_PRINTF(
+		             "[UI] TASK4 RUNNING: tracking enabled, laser latch after lock.\r\n");
+	}
+	else
+	{
+		MainUi_EnterSafe("UNKNOWN_MODE");
 	}
 }
 
@@ -714,7 +751,7 @@ static void MainUi_Init(void)
 
 	MainUi_Print("BOOT");
 	MAIN_UART4_PRINTF(
-	             "[UI] Step8 V12: PID tune, main USART4 logs muted, TASK3 -> TASK2 RUNNING.\r\n");
+	             "[UI] Step9 TASK4 FIX1: latch laser, forward declarations fixed.\r\n");
 }
 
 static void MainUi_Update(uint8_t key_event)
@@ -973,7 +1010,8 @@ int main(void)
 				 */
 				if ((s_main_ui_state == MAIN_UI_RUNNING) &&
 				    ((s_main_ui_mode == MAIN_AIM_MODE_FIND) ||
-				     (s_main_ui_mode == MAIN_AIM_MODE_TASK2)))
+				     (s_main_ui_mode == MAIN_AIM_MODE_TASK2) ||
+				     (s_main_ui_mode == MAIN_AIM_MODE_TASK4)))
 				{
 					AimControl_Update(target_x,
 					                  target_y,

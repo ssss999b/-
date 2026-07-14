@@ -21,8 +21,8 @@
  * 如果某一轴越追越远，就把对应轴从 1.0f 改成 -1.0f，或者反过来。
  * 注意：KP/KI/KD 建议保持正数，方向只在这里改。
  */
-#define AIM_X_DIR_SIGN           (-1.0f)
-#define AIM_Y_DIR_SIGN           (-1.0f)
+#define AIM_X_DIR_SIGN           (1.0f)
+#define AIM_Y_DIR_SIGN           (1.0f)
 
 /* 控制分频：
  * K230 大约 50~60fps。
@@ -49,6 +49,27 @@
 #define AIM_Y_KI                 (0.003f)
 #define AIM_Y_KD                 (0.00f)
 
+/* ============================================================
+ * TASK4 独立 PID 参数
+ * ============================================================
+ *
+ * TASK2/FIND 继续使用上面的 AIM_X/Y_KP/KI/KD；
+ * TASK4 进入 RUNNING 后会自动切换到下面这一套参数。
+ *
+ * 调参建议：
+ *   - 小车运动时激光落后：适当增大 KP，或增大 TASK4_KF_LEAD_TIME；
+ *   - 来回摆/超调：减小 KP，减小 LEAD_TIME，或增大 KF_R；
+ *   - 长期固定偏差：小幅增加 KI；
+ *   - 细碎抖动：减小 KP，增大 KF_R，减小 Q_ACCEL。
+ */
+#define AIM_TASK4_X_KP           (0.012f)
+#define AIM_TASK4_X_KI           (0.004f)
+#define AIM_TASK4_X_KD           (0.00f)
+
+#define AIM_TASK4_Y_KP           (0.010f)
+#define AIM_TASK4_Y_KI           (0.003f)
+#define AIM_TASK4_Y_KD           (0.00f)
+
 /* 像素死区：
  * 当 |ex| 或 |ey| 小于死区时，对应轴 PID 输出会变为 0。
  */
@@ -63,6 +84,29 @@
 #define AIM_RPM                  12U
 #define AIM_ACCEL                MOTOR_ACCEL_DIRECT
 #define AIM_MOTOR_MODE           MOTOR_MODE_REL
+
+/* ============================================================
+ * TASK4 独立输出限制 / 电机速度参数
+ * ============================================================
+ *
+ * TASK4_OUT_MAX_DEG:
+ *   单次 PID 输出最大角度。减小更稳，增大更跟手。
+ *
+ * TASK4_MIN_STEP_DEG:
+ *   最小步进补偿。0 表示不强制补偿；
+ *   如果输出太小电机不动，可设到 0.10~0.12。
+ *
+ * TASK4_RPM:
+ *   TASK4 跟踪速度。增大更快但容易过冲，减小更稳但可能跟不上小车。
+ *
+ * TASK4_OUT_SLEW_MAX_STEP:
+ *   输出斜率限制。减小更丝滑但滞后，增大更跟手但可能抖。
+ */
+#define AIM_TASK4_OUT_MAX_DEG       (360.00f)
+#define AIM_TASK4_MIN_STEP_DEG      (0.001f)
+#define AIM_TASK4_RPM               12U
+#define AIM_TASK4_OUT_SLEW_ENABLE   1U
+#define AIM_TASK4_OUT_SLEW_MAX_STEP (1.20f)
 
 /* 目标丢失保护 */
 #define AIM_LOST_STOP_COUNT      10U
@@ -104,9 +148,27 @@
  *   如果出现超调/来回摆，先改回 0.000f。
  */
 #define AIM_KF_ENABLE            1U
-#define AIM_KF_R                 (16.0f)
+#define AIM_KF_R                 (100.0f)
 #define AIM_KF_Q_ACCEL           (8000.0f)
-#define AIM_KF_LEAD_TIME_S       (0.020f)
+#define AIM_KF_LEAD_TIME_S       (0.030f)
+
+/* ============================================================
+ * TASK4 独立二状态卡尔曼参数
+ * ============================================================
+ *
+ * TASK4_KF_R:
+ *   视觉测量噪声。增大更稳但更慢，减小更跟手但更抖。
+ *
+ * TASK4_KF_Q_ACCEL:
+ *   误差加速度过程噪声。增大更跟手，减小更平滑。
+ *
+ * TASK4_KF_LEAD_TIME_S:
+ *   预测提前量。增大可补偿小车运动滞后，但太大会超前/来回摆。
+ */
+#define AIM_TASK4_KF_ENABLE         1U
+#define AIM_TASK4_KF_R              (16.0f)
+#define AIM_TASK4_KF_Q_ACCEL        (8000.0f)
+#define AIM_TASK4_KF_LEAD_TIME_S    (0.020f)
 
 /* 输出斜率限制：
  * 作用是限制每次电机角度指令的变化速度，让运动更丝滑。
@@ -141,6 +203,15 @@
 /* 连续多少帧都对准后，才真正打开激光 */
 #define AIM_LASER_STABLE_COUNT       5U
 
+/* TASK4：发挥部分连续打靶，使用独立 PID/KF 参数。
+ * 初次开激光条件与 TASK2 共用 AIM_LASER_ALIGN_X/Y 和 AIM_LASER_STABLE_COUNT。
+ * 但一旦开灯后会锁存常亮，短暂丢目标/误差变大不自动关灯。
+ *
+ * status=0 时立即 Stop X/Y，避免视觉不稳时云台乱动；
+ * 不 Reset PID/卡尔曼，目标恢复后继续跟踪。
+ */
+#define AIM_TASK4_LOST_STOP_IMMEDIATE 1U
+
 /* 调试串口 */
 #define AIM_DEBUG_ENABLE         1U
 #define AIM_DEBUG_UART           USART4
@@ -170,7 +241,7 @@
 #define AIM_OLD_UART4_LOG_ENABLE     0U
 
 #if (AIM_OLD_UART4_LOG_ENABLE != 0U)
-#define AIM_OLD_DEBUG_PRINTF(...)    AIM_OLD_DEBUG_PRINTF( __VA_ARGS__)
+#define AIM_OLD_DEBUG_PRINTF(...)    usart_printf(AIM_DEBUG_UART, __VA_ARGS__)
 #else
 #define AIM_OLD_DEBUG_PRINTF(...)    do { } while (0)
 #endif
@@ -244,6 +315,15 @@ static uint8_t s_laser_align_cnt = 0U;
  */
 static uint8_t s_laser_allowed = 0U;
 
+/* TASK4 激光锁存模式：
+ * s_task4_mode = 1 时：
+ *   - 未锁存前，开灯条件与 TASK2 一样；
+ *   - 一旦 s_task4_laser_latched = 1，激光保持常亮；
+ *   - status 短暂丢失或误差变大都不自动关灯。
+ */
+static uint8_t s_task4_mode = 0U;
+static uint8_t s_task4_laser_latched = 0U;
+
 
 /* ============================================================
  * 内部辅助函数
@@ -312,16 +392,58 @@ static void aim_laser_set(uint8_t on)
 static void aim_laser_update(int16_t ex, int16_t ey, int16_t status)
 {
 #if (AIM_LASER_ENABLE != 0U)
-    /* FIND 模式 / SAFE 状态下会禁止激光。
-     * 只要 s_laser_allowed = 0，就算误差已经满足阈值，也绝不打开激光。
-     */
+    /* FIND / SAFE / 禁止激光时，必须强制关灯，并清 TASK4 锁存。 */
     if (s_laser_allowed == 0U)
     {
         s_laser_align_cnt = 0U;
+        s_task4_laser_latched = 0U;
         aim_laser_set(0U);
         return;
     }
 
+    /* TASK4：激光锁存常亮模式。
+     * 初次开灯条件与 TASK2 一样；
+     * 一旦锁存，后续 status=0 或误差变大都不自动关灯。
+     */
+    if (s_task4_mode != 0U)
+    {
+        if (s_task4_laser_latched != 0U)
+        {
+            aim_laser_set(1U);
+            return;
+        }
+
+        if (status == 0)
+        {
+            s_laser_align_cnt = 0U;
+            aim_laser_set(0U);
+            return;
+        }
+
+        if ((aim_abs_i16(ex) <= AIM_LASER_ALIGN_X_PX) &&
+            (aim_abs_i16(ey) <= AIM_LASER_ALIGN_Y_PX))
+        {
+            if (s_laser_align_cnt < AIM_LASER_STABLE_COUNT)
+            {
+                s_laser_align_cnt++;
+            }
+
+            if (s_laser_align_cnt >= AIM_LASER_STABLE_COUNT)
+            {
+                s_task4_laser_latched = 1U;
+                aim_laser_set(1U);
+            }
+        }
+        else
+        {
+            s_laser_align_cnt = 0U;
+            aim_laser_set(0U);
+        }
+
+        return;
+    }
+
+    /* 普通 TASK2 逻辑：目标丢失或偏离阈值就关灯。 */
     if (status == 0)
     {
         s_laser_align_cnt = 0U;
@@ -354,8 +476,31 @@ static void aim_laser_update(int16_t ex, int16_t ey, int16_t status)
 #endif
 }
 
+/* 绝对值限幅 */
+static float aim_limit_abs(float x, float max_abs)
+{
+    max_abs = aim_abs_f(max_abs);
+
+    if (max_abs <= 0.0f)
+    {
+        return 0.0f;
+    }
+
+    if (x > max_abs)
+    {
+        return max_abs;
+    }
+
+    if (x < -max_abs)
+    {
+        return -max_abs;
+    }
+
+    return x;
+}
+
 /* 最小步进补偿 */
-static float aim_apply_min_step(float x)
+static float aim_apply_min_step_ex(float x, float min_step)
 {
     float a;
 
@@ -364,11 +509,17 @@ static float aim_apply_min_step(float x)
         return 0.0f;
     }
 
+    min_step = aim_abs_f(min_step);
+    if (min_step <= 0.0f)
+    {
+        return x;
+    }
+
     a = aim_abs_f(x);
 
-    if (a < AIM_MIN_STEP_DEG)
+    if (a < min_step)
     {
-        return (x > 0.0f) ? AIM_MIN_STEP_DEG : -AIM_MIN_STEP_DEG;
+        return (x > 0.0f) ? min_step : -min_step;
     }
 
     return x;
@@ -440,7 +591,7 @@ static void aim_kf_reset(AimKalmanCV1D_t *kf)
  * dt         ：采样周期，单位 s
  * 返回值     ：滤波并可略微预测后的误差
  */
-static float aim_kf_update(AimKalmanCV1D_t *kf, float measurement, float dt)
+static float aim_kf_update(AimKalmanCV1D_t *kf, float measurement, float dt, float r, float q_accel, float lead_time)
 {
     float dt2;
     float dt3;
@@ -481,9 +632,9 @@ static float aim_kf_update(AimKalmanCV1D_t *kf, float measurement, float dt)
     dt4 = dt2 * dt2;
 
     /* 常加速度模型过程噪声 Q */
-    q00 = 0.25f * dt4 * AIM_KF_Q_ACCEL;
-    q01 = 0.5f  * dt3 * AIM_KF_Q_ACCEL;
-    q11 = dt2 * AIM_KF_Q_ACCEL;
+    q00 = 0.25f * dt4 * q_accel;
+    q01 = 0.5f  * dt3 * q_accel;
+    q11 = dt2 * q_accel;
 
     /* 预测：x = x + v*dt，v = v */
     x_pred = kf->x + (kf->v * dt);
@@ -496,7 +647,7 @@ static float aim_kf_update(AimKalmanCV1D_t *kf, float measurement, float dt)
     p11_pred = kf->p11 + q11;
 
     /* 测量更新，H = [1, 0] */
-    s = p00_pred + AIM_KF_R;
+    s = p00_pred + r;
     if (s <= 1e-6f)
     {
         s = 1e-6f;
@@ -515,7 +666,7 @@ static float aim_kf_update(AimKalmanCV1D_t *kf, float measurement, float dt)
     kf->p11 = p11_pred - k1 * p01_pred;
 
     /* 轻微提前预测，补偿视觉和串口控制延迟 */
-    out = kf->x + (kf->v * AIM_KF_LEAD_TIME_S);
+    out = kf->x + (kf->v * lead_time);
 
     return out;
 }
@@ -687,9 +838,19 @@ void AimControl_Reset(void)
     s_cmd_div_cnt = 0U;
     s_debug_div_cnt = 0U;
 
-    /* 清 PID / ref 改变 / 目标丢失时，必须关闭激光 */
-    s_laser_align_cnt = 0U;
-    aim_laser_set(0U);
+    /* 普通模式 Reset 必须关激光。
+     * TASK4 已经锁存开灯后，Reset 只清 PID/滤波，不关激光；
+     * 否则短暂丢目标/ref 抖动会破坏“连续打靶”。
+     */
+    if ((s_task4_mode != 0U) && (s_task4_laser_latched != 0U))
+    {
+        aim_laser_set(1U);
+    }
+    else
+    {
+        s_laser_align_cnt = 0U;
+        aim_laser_set(0U);
+    }
 }
 
 /* 设置是否允许自动开激光。
@@ -712,7 +873,58 @@ void AimControl_SetLaserAllowed(uint8_t allowed)
     {
         s_laser_allowed = 0U;
         s_laser_align_cnt = 0U;
+        s_task4_laser_latched = 0U;
         aim_laser_set(0U);
+    }
+}
+
+/* 设置 TASK4 激光锁存模式。
+ *
+ * enable = 0：
+ *   普通 FIND/TASK2/TASK3 逻辑。
+ *
+ * enable != 0：
+ *   TASK4 逻辑：初次开灯条件与 TASK2 相同，开灯后锁存常亮。
+ */
+void AimControl_SetTask4Mode(uint8_t enable)
+{
+    if (enable != 0U)
+    {
+        s_task4_mode = 1U;
+        s_task4_laser_latched = 0U;
+        s_laser_align_cnt = 0U;
+
+        /* TASK4 使用独立 PID 参数。
+         * main.c 随后还会调用 AimControl_Reset() 清状态。
+         */
+        aim_pid_setup(&s_pid_x,
+                      AIM_TASK4_X_KP,
+                      AIM_TASK4_X_KI,
+                      AIM_TASK4_X_KD,
+                      AIM_DEADBAND_X_PX);
+        aim_pid_setup(&s_pid_y,
+                      AIM_TASK4_Y_KP,
+                      AIM_TASK4_Y_KI,
+                      AIM_TASK4_Y_KD,
+                      AIM_DEADBAND_Y_PX);
+    }
+    else
+    {
+        s_task4_mode = 0U;
+        s_task4_laser_latched = 0U;
+        s_laser_align_cnt = 0U;
+
+        /* 退出 TASK4 后恢复普通 FIND/TASK2 参数。 */
+        aim_pid_setup(&s_pid_x,
+                      AIM_X_KP,
+                      AIM_X_KI,
+                      AIM_X_KD,
+                      AIM_DEADBAND_X_PX);
+        aim_pid_setup(&s_pid_y,
+                      AIM_Y_KP,
+                      AIM_Y_KI,
+                      AIM_Y_KD,
+                      AIM_DEADBAND_Y_PX);
     }
 }
 
@@ -734,6 +946,9 @@ void AimControl_Stop(void)
     {
         (void)Stepmotor_Stop(AIM_MOTOR_Y);
     }
+
+    s_task4_mode = 0U;
+    s_task4_laser_latched = 0U;
 
     AimControl_SetLaserAllowed(0U);
     AimControl_Reset();
@@ -762,6 +977,8 @@ void AimControl_Init(void)
      * 默认禁止激光，只有后续 TASK2/TASK3 正式接入时才会允许。
      */
     s_laser_allowed = 0U;
+    s_task4_mode = 0U;
+    s_task4_laser_latched = 0U;
     s_laser_on = 0U;
     s_laser_align_cnt = 0U;
     LED_Control(AIM_LASER_ID, AIM_LASER_OFF_LEVEL);
@@ -836,15 +1053,39 @@ void AimControl_Update(int16_t target_x,
     float ey_f = 0.0f;
     float x_angle = 0.0f;
     float y_angle = 0.0f;
+    uint16_t motor_rpm = AIM_RPM;
     MotorErrCode x_cmd = MOTOR_OK;
     MotorErrCode y_cmd = MOTOR_OK;
 
     /* 目标丢失处理 */
     if (status == 0)
     {
-        /* 目标丢失时，激光必须立即关闭 */
+        /* TASK4 中：激光已经锁存后不能因为短暂丢帧关灯。
+         * 同时停止 X/Y，避免视觉不稳时继续乱追。
+         */
         aim_laser_update(ex, ey, status);
 
+        if (s_task4_mode != 0U)
+        {
+#if (AIM_TASK4_LOST_STOP_IMMEDIATE != 0U)
+            if (s_lost_stopped == 0U)
+            {
+                if (s_motor_x_ok != 0U)
+                {
+                    (void)Stepmotor_Stop(AIM_MOTOR_X);
+                }
+                if (s_motor_y_ok != 0U)
+                {
+                    (void)Stepmotor_Stop(AIM_MOTOR_Y);
+                }
+
+                s_lost_stopped = 1U;
+            }
+#endif
+            return;
+        }
+
+        /* 普通 FIND/TASK2：沿用原来的目标丢失保护，丢失后关灯并 Reset。 */
         if (s_lost_cnt < 255U)
         {
             s_lost_cnt++;
@@ -895,15 +1136,48 @@ void AimControl_Update(int16_t target_x,
     }
     s_cmd_div_cnt = 0U;
 
-#if (AIM_KF_ENABLE != 0U)
-    /* 使用二状态卡尔曼滤波/预测误差 */
-    ex_f = aim_kf_update(&s_kf_ex, (float)ex, AIM_PID_DT_S);
-    ey_f = aim_kf_update(&s_kf_ey, (float)ey, AIM_PID_DT_S);
+    if (s_task4_mode != 0U)
+    {
+#if (AIM_TASK4_KF_ENABLE != 0U)
+        /* TASK4 使用独立二状态卡尔曼滤波/预测误差 */
+        ex_f = aim_kf_update(&s_kf_ex,
+                             (float)ex,
+                             AIM_PID_DT_S,
+                             AIM_TASK4_KF_R,
+                             AIM_TASK4_KF_Q_ACCEL,
+                             AIM_TASK4_KF_LEAD_TIME_S);
+        ey_f = aim_kf_update(&s_kf_ey,
+                             (float)ey,
+                             AIM_PID_DT_S,
+                             AIM_TASK4_KF_R,
+                             AIM_TASK4_KF_Q_ACCEL,
+                             AIM_TASK4_KF_LEAD_TIME_S);
 #else
-    /* 不使用滤波，直接使用原始误差 */
-    ex_f = (float)ex;
-    ey_f = (float)ey;
+        ex_f = (float)ex;
+        ey_f = (float)ey;
 #endif
+    }
+    else
+    {
+#if (AIM_KF_ENABLE != 0U)
+        /* 普通 FIND/TASK2 使用原来的二状态卡尔曼参数 */
+        ex_f = aim_kf_update(&s_kf_ex,
+                             (float)ex,
+                             AIM_PID_DT_S,
+                             AIM_KF_R,
+                             AIM_KF_Q_ACCEL,
+                             AIM_KF_LEAD_TIME_S);
+        ey_f = aim_kf_update(&s_kf_ey,
+                             (float)ey,
+                             AIM_PID_DT_S,
+                             AIM_KF_R,
+                             AIM_KF_Q_ACCEL,
+                             AIM_KF_LEAD_TIME_S);
+#else
+        ex_f = (float)ex;
+        ey_f = (float)ey;
+#endif
+    }
 
     /* PID uses error = Target - Actual.
      * Set Target=0 and Actual=-ex_f, then PID error equals ex_f.
@@ -911,14 +1185,37 @@ void AimControl_Update(int16_t target_x,
     x_angle = PID_CalcDt(&s_pid_x, -ex_f, AIM_PID_DT_S) * AIM_X_DIR_SIGN;
     y_angle = PID_CalcDt(&s_pid_y, -ey_f, AIM_PID_DT_S) * AIM_Y_DIR_SIGN;
 
-#if (AIM_OUT_SLEW_ENABLE != 0U)
-    x_angle = aim_slew_rate(x_angle, s_last_x_angle, AIM_OUT_SLEW_MAX_STEP);
-    y_angle = aim_slew_rate(y_angle, s_last_y_angle, AIM_OUT_SLEW_MAX_STEP);
+    if (s_task4_mode != 0U)
+    {
+        motor_rpm = AIM_TASK4_RPM;
+
+        x_angle = aim_limit_abs(x_angle, AIM_TASK4_OUT_MAX_DEG);
+        y_angle = aim_limit_abs(y_angle, AIM_TASK4_OUT_MAX_DEG);
+
+#if (AIM_TASK4_OUT_SLEW_ENABLE != 0U)
+        x_angle = aim_slew_rate(x_angle, s_last_x_angle, AIM_TASK4_OUT_SLEW_MAX_STEP);
+        y_angle = aim_slew_rate(y_angle, s_last_y_angle, AIM_TASK4_OUT_SLEW_MAX_STEP);
 #endif
 
-    /* 对非零输出做最小步进补偿 */
-    x_angle = aim_apply_min_step(x_angle);
-    y_angle = aim_apply_min_step(y_angle);
+        x_angle = aim_apply_min_step_ex(x_angle, AIM_TASK4_MIN_STEP_DEG);
+        y_angle = aim_apply_min_step_ex(y_angle, AIM_TASK4_MIN_STEP_DEG);
+    }
+    else
+    {
+        motor_rpm = AIM_RPM;
+
+        x_angle = aim_limit_abs(x_angle, AIM_OUT_MAX_DEG);
+        y_angle = aim_limit_abs(y_angle, AIM_OUT_MAX_DEG);
+
+#if (AIM_OUT_SLEW_ENABLE != 0U)
+        x_angle = aim_slew_rate(x_angle, s_last_x_angle, AIM_OUT_SLEW_MAX_STEP);
+        y_angle = aim_slew_rate(y_angle, s_last_y_angle, AIM_OUT_SLEW_MAX_STEP);
+#endif
+
+        /* 对非零输出做最小步进补偿 */
+        x_angle = aim_apply_min_step_ex(x_angle, AIM_MIN_STEP_DEG);
+        y_angle = aim_apply_min_step_ex(y_angle, AIM_MIN_STEP_DEG);
+    }
 
     s_last_x_angle = x_angle;
     s_last_y_angle = y_angle;
@@ -953,7 +1250,7 @@ void AimControl_Update(int16_t target_x,
     {
         x_cmd = Stepmotor_MoveTo(AIM_MOTOR_X,
                                  x_angle,
-                                 AIM_RPM,
+                                 motor_rpm,
                                  AIM_ACCEL,
                                  AIM_MOTOR_MODE);
 
@@ -970,7 +1267,7 @@ void AimControl_Update(int16_t target_x,
     {
         y_cmd = Stepmotor_MoveTo(AIM_MOTOR_Y,
                                  y_angle,
-                                 AIM_RPM,
+                                 motor_rpm,
                                  AIM_ACCEL,
                                  AIM_MOTOR_MODE);
 

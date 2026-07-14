@@ -43,6 +43,13 @@ void AimControl_Reset(void);
  */
 void AimControl_SetLaserAllowed(uint8_t allowed);
 
+/* 设置 TASK4 激光锁存模式。
+ *
+ * enable = 0：普通 FIND/TASK2/TASK3 逻辑。
+ * enable != 0：TASK4 逻辑，初次开灯条件同 TASK2，之后激光锁存常亮。
+ */
+void AimControl_SetTask4Mode(uint8_t enable);
+
 /* 安全停止：
  *   停止 X/Y 电机，关闭激光，清 PID / 卡尔曼 / 计数器。
  */
