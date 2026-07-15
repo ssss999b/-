@@ -4,6 +4,7 @@
 #include "usart.h"
 #include "My_Usart/My_Usart.h"
 #include "LED.h"
+#include "Control_Task.h"
 #include <stdint.h>
 
 /* ============================================================
@@ -62,12 +63,12 @@
  *   - 长期固定偏差：小幅增加 KI；
  *   - 细碎抖动：减小 KP，增大 KF_R，减小 Q_ACCEL。
  */
-#define AIM_TASK4_X_KP           (0.012f)
-#define AIM_TASK4_X_KI           (0.004f)
-#define AIM_TASK4_X_KD           (0.00f)
+#define AIM_TASK4_X_KP           (0.0125f)  //0.012f
+#define AIM_TASK4_X_KI           (0.005f)  //0.004f
+#define AIM_TASK4_X_KD           (0.0f)
 
-#define AIM_TASK4_Y_KP           (0.010f)
-#define AIM_TASK4_Y_KI           (0.003f)
+#define AIM_TASK4_Y_KP           (0.010f)   //0.010f
+#define AIM_TASK4_Y_KI           (0.003f)   //0.003f
 #define AIM_TASK4_Y_KD           (0.00f)
 
 /* 像素死区：
@@ -148,9 +149,9 @@
  *   如果出现超调/来回摆，先改回 0.000f。
  */
 #define AIM_KF_ENABLE            1U
-#define AIM_KF_R                 (100.0f)
+#define AIM_KF_R                 (16.0f)
 #define AIM_KF_Q_ACCEL           (8000.0f)
-#define AIM_KF_LEAD_TIME_S       (0.030f)
+#define AIM_KF_LEAD_TIME_S       (0.020f)
 
 /* ============================================================
  * TASK4 独立二状态卡尔曼参数
@@ -164,11 +165,27 @@
  *
  * TASK4_KF_LEAD_TIME_S:
  *   预测提前量。增大可补偿小车运动滞后，但太大会超前/来回摆。
+ *   作用是补偿视觉识别、串口通信、电机响应这些延迟。
  */
 #define AIM_TASK4_KF_ENABLE         1U
-#define AIM_TASK4_KF_R              (16.0f)
-#define AIM_TASK4_KF_Q_ACCEL        (8000.0f)
-#define AIM_TASK4_KF_LEAD_TIME_S    (0.020f)
+#define AIM_TASK4_KF_R              (8.0f)                 //R 越大：越不相信当前视觉输出,更平滑,但是反应更慢             R 越小：越相信当前视觉 反应更快,但是更容易抖
+#define AIM_TASK4_KF_Q_ACCEL        (11000.0f)               //Q_ACCEL 越大：认为目标变化更快,更跟手,滞后更小,但更容易抖    Q_ACCEL 越小： 更平滑,更稳,但更容易跟不上
+#define AIM_TASK4_KF_LEAD_TIME_S    (0.040f)                //LEAD_TIME 越大：越提前,更容易解决滞后                       LEAD_TIME 太大：会超前,会过冲,会来回摆 
+
+/* TASK4 固定周期 / 真实 dt / 短丢失预测参数。
+ *
+ * TASK4 现在由 main.c 按 task4_control_flag 固定周期调用；
+ * 本文件内部仍用 Control_Task_GetMillis() 计算真实 dt，并做限幅保护。
+ */
+#define AIM_TASK4_DT_DEFAULT_S             (0.015f)
+#define AIM_TASK4_DT_MIN_S                 (0.005f)
+#define AIM_TASK4_DT_MAX_S                 (0.050f)
+
+/* 短丢失预测保持周期数。
+ * 5 个周期 × 15ms ≈ 75ms。
+ * 在这段时间内不 Stop，继续用卡尔曼预测误差追一小段。
+ */
+#define AIM_TASK4_LOST_PREDICT_FRAMES      5U
 
 /* 输出斜率限制：
  * 作用是限制每次电机角度指令的变化速度，让运动更丝滑。
@@ -207,10 +224,10 @@
  * 初次开激光条件与 TASK2 共用 AIM_LASER_ALIGN_X/Y 和 AIM_LASER_STABLE_COUNT。
  * 但一旦开灯后会锁存常亮，短暂丢目标/误差变大不自动关灯。
  *
- * status=0 时立即 Stop X/Y，避免视觉不稳时云台乱动；
- * 不 Reset PID/卡尔曼，目标恢复后继续跟踪。
+ * Step10：TASK4 不再一丢目标就立即 Stop；
+ * 固定周期控制函数会在短丢失期间继续预测，连续丢失太久才 Stop。
  */
-#define AIM_TASK4_LOST_STOP_IMMEDIATE 1U
+#define AIM_TASK4_LOST_STOP_IMMEDIATE 0U
 
 /* 调试串口 */
 #define AIM_DEBUG_ENABLE         1U
@@ -323,6 +340,10 @@ static uint8_t s_laser_allowed = 0U;
  */
 static uint8_t s_task4_mode = 0U;
 static uint8_t s_task4_laser_latched = 0U;
+
+/* TASK4 固定周期预测控制状态 */
+static uint32_t s_task4_last_update_ms = 0U;
+static uint8_t s_task4_lost_predict_cnt = 0U;
 
 
 /* ============================================================
@@ -671,6 +692,104 @@ static float aim_kf_update(AimKalmanCV1D_t *kf, float measurement, float dt, flo
     return out;
 }
 
+
+/* 二状态卡尔曼仅预测：
+ * 没有新视觉测量时使用。
+ * 作用：短暂丢帧/短暂 status=0 时，不拿旧数据重复更新，只根据 x/v 预测。
+ */
+static float aim_kf_predict_only(AimKalmanCV1D_t *kf,
+                                 float dt,
+                                 float q_accel,
+                                 float lead_time)
+{
+    float dt2;
+    float dt3;
+    float dt4;
+    float q00;
+    float q01;
+    float q11;
+    float x_pred;
+    float v_pred;
+    float p00_pred;
+    float p01_pred;
+    float p10_pred;
+    float p11_pred;
+
+    if (kf == 0)
+    {
+        return 0.0f;
+    }
+
+    if (kf->inited == 0U)
+    {
+        return 0.0f;
+    }
+
+    if (dt <= 0.0f)
+    {
+        dt = AIM_TASK4_DT_DEFAULT_S;
+    }
+
+    dt2 = dt * dt;
+    dt3 = dt2 * dt;
+    dt4 = dt2 * dt2;
+
+    q00 = 0.25f * dt4 * q_accel;
+    q01 = 0.5f  * dt3 * q_accel;
+    q11 = dt2 * q_accel;
+
+    x_pred = kf->x + (kf->v * dt);
+    v_pred = kf->v;
+
+    p00_pred = kf->p00 + dt * (kf->p10 + kf->p01) + dt2 * kf->p11 + q00;
+    p01_pred = kf->p01 + dt * kf->p11 + q01;
+    p10_pred = kf->p10 + dt * kf->p11 + q01;
+    p11_pred = kf->p11 + q11;
+
+    kf->x = x_pred;
+    kf->v = v_pred;
+    kf->p00 = p00_pred;
+    kf->p01 = p01_pred;
+    kf->p10 = p10_pred;
+    kf->p11 = p11_pred;
+
+    return kf->x + (kf->v * lead_time);
+}
+
+/* TASK4 使用真实 dt。
+ * 第一次调用或异常时使用默认 15ms，之后用 Control_Task_GetMillis() 计算真实周期。
+ */
+static float aim_task4_get_dt_s(void)
+{
+    uint32_t now_ms;
+    uint32_t diff_ms;
+    float dt;
+
+    now_ms = Control_Task_GetMillis();
+
+    if (s_task4_last_update_ms == 0U)
+    {
+        s_task4_last_update_ms = now_ms;
+        return AIM_TASK4_DT_DEFAULT_S;
+    }
+
+    diff_ms = (uint32_t)(now_ms - s_task4_last_update_ms);
+    s_task4_last_update_ms = now_ms;
+
+    dt = ((float)diff_ms) / 1000.0f;
+
+    if (dt < AIM_TASK4_DT_MIN_S)
+    {
+        dt = AIM_TASK4_DT_MIN_S;
+    }
+    else if (dt > AIM_TASK4_DT_MAX_S)
+    {
+        dt = AIM_TASK4_DT_MAX_S;
+    }
+
+    return dt;
+}
+
 /* PID 初始化配置 */
 static void aim_pid_setup(PID_TypeDef *pid,
                           float kp,
@@ -838,6 +957,9 @@ void AimControl_Reset(void)
     s_cmd_div_cnt = 0U;
     s_debug_div_cnt = 0U;
 
+    s_task4_last_update_ms = 0U;
+    s_task4_lost_predict_cnt = 0U;
+
     /* 普通模式 Reset 必须关激光。
      * TASK4 已经锁存开灯后，Reset 只清 PID/滤波，不关激光；
      * 否则短暂丢目标/ref 抖动会破坏“连续打靶”。
@@ -893,6 +1015,8 @@ void AimControl_SetTask4Mode(uint8_t enable)
         s_task4_mode = 1U;
         s_task4_laser_latched = 0U;
         s_laser_align_cnt = 0U;
+        s_task4_last_update_ms = 0U;
+        s_task4_lost_predict_cnt = 0U;
 
         /* TASK4 使用独立 PID 参数。
          * main.c 随后还会调用 AimControl_Reset() 清状态。
@@ -913,6 +1037,8 @@ void AimControl_SetTask4Mode(uint8_t enable)
         s_task4_mode = 0U;
         s_task4_laser_latched = 0U;
         s_laser_align_cnt = 0U;
+        s_task4_last_update_ms = 0U;
+        s_task4_lost_predict_cnt = 0U;
 
         /* 退出 TASK4 后恢复普通 FIND/TASK2 参数。 */
         aim_pid_setup(&s_pid_x,
@@ -949,6 +1075,8 @@ void AimControl_Stop(void)
 
     s_task4_mode = 0U;
     s_task4_laser_latched = 0U;
+    s_task4_last_update_ms = 0U;
+    s_task4_lost_predict_cnt = 0U;
 
     AimControl_SetLaserAllowed(0U);
     AimControl_Reset();
@@ -979,6 +1107,8 @@ void AimControl_Init(void)
     s_laser_allowed = 0U;
     s_task4_mode = 0U;
     s_task4_laser_latched = 0U;
+    s_task4_last_update_ms = 0U;
+    s_task4_lost_predict_cnt = 0U;
     s_laser_on = 0U;
     s_laser_align_cnt = 0U;
     LED_Control(AIM_LASER_ID, AIM_LASER_OFF_LEVEL);
@@ -1280,6 +1410,235 @@ void AimControl_Update(int16_t target_x,
     }
 
     /* 低频打印当前状态 */
+    aim_debug_print(target_x,
+                    target_y,
+                    ref_x,
+                    ref_y,
+                    ex,
+                    ey,
+                    status,
+                    ex_f,
+                    ey_f,
+                    x_angle,
+                    y_angle);
+
+    (void)x_cmd;
+    (void)y_cmd;
+}
+
+
+/* TASK4 固定周期预测控制。
+ *
+ * 与 AimControl_Update() 的区别：
+ *   1. 由 main.c 按 task4_control_flag 固定周期调用，不再依赖 K230 帧到达时间；
+ *   2. 使用真实 dt；
+ *   3. 有新 status=1 帧时做卡尔曼测量更新；
+ *   4. 没有新帧或 status=0 时，短时间只做卡尔曼预测，不立即 Stop；
+ *   5. 连续丢失太久才 Stop，激光锁存状态仍保持；
+ *   6. FIX1：无新帧周期不再清激光对准计数，避免锁定不开灯。
+ */
+void AimControl_Task4Periodic(int16_t target_x,
+                              int16_t target_y,
+                              int16_t ref_x,
+                              int16_t ref_y,
+                              int16_t ex,
+                              int16_t ey,
+                              int16_t status,
+                              uint8_t has_new_frame)
+{
+    uint8_t measurement_valid;
+    float dt;
+    float ex_f = 0.0f;
+    float ey_f = 0.0f;
+    float x_angle = 0.0f;
+    float y_angle = 0.0f;
+    MotorErrCode x_cmd = MOTOR_OK;
+    MotorErrCode y_cmd = MOTOR_OK;
+
+    /* 本函数只服务 TASK4。非 TASK4 时直接退出，防止误调用。 */
+    if (s_task4_mode == 0U)
+    {
+        return;
+    }
+
+    dt = aim_task4_get_dt_s();
+
+    measurement_valid = ((has_new_frame != 0U) && (status != 0)) ? 1U : 0U;
+
+    /* 激光逻辑修复 FIX1：
+     *
+     * Step10 V1 把 TASK4 改成 15ms 固定周期控制后，控制周期可能比 K230 帧率更快。
+     * 如果“没有新帧”的周期也调用 aim_laser_update(..., status=0)，
+     * 会把 s_laser_align_cnt 清零，导致永远凑不够 AIM_LASER_STABLE_COUNT，
+     * 表现为“已经锁定但不开激光”。
+     *
+     * 正确做法：
+     *   - 有新帧时，才用这一帧的 status/ex/ey 更新开灯判定；
+     *   - 没有新帧时，不改变激光对准计数；
+     *   - 已经锁存开灯后，GPIO 会保持常亮，不需要每个周期重复写。
+     */
+    if (has_new_frame != 0U)
+    {
+        if (status != 0)
+        {
+            aim_laser_update(ex, ey, 1);
+        }
+        else
+        {
+            aim_laser_update(ex, ey, 0);
+        }
+    }
+
+    if (measurement_valid != 0U)
+    {
+        s_lost_cnt = 0U;
+        s_task4_lost_predict_cnt = 0U;
+        s_lost_stopped = 0U;
+
+        /* ref 变化时清 PID 和卡尔曼，跳过当前周期。
+         * TASK4 已锁存激光时，AimControl_Reset() 不会关灯。
+         */
+        if (aim_check_ref_changed(ref_x, ref_y) != 0U)
+        {
+            return;
+        }
+
+#if (AIM_TASK4_KF_ENABLE != 0U)
+        ex_f = aim_kf_update(&s_kf_ex,
+                             (float)ex,
+                             dt,
+                             AIM_TASK4_KF_R,
+                             AIM_TASK4_KF_Q_ACCEL,
+                             AIM_TASK4_KF_LEAD_TIME_S);
+        ey_f = aim_kf_update(&s_kf_ey,
+                             (float)ey,
+                             dt,
+                             AIM_TASK4_KF_R,
+                             AIM_TASK4_KF_Q_ACCEL,
+                             AIM_TASK4_KF_LEAD_TIME_S);
+#else
+        ex_f = (float)ex;
+        ey_f = (float)ey;
+#endif
+    }
+    else
+    {
+        if (s_task4_lost_predict_cnt < 255U)
+        {
+            s_task4_lost_predict_cnt++;
+        }
+
+        s_lost_cnt = s_task4_lost_predict_cnt;
+
+        if (s_task4_lost_predict_cnt > AIM_TASK4_LOST_PREDICT_FRAMES)
+        {
+            if (s_lost_stopped == 0U)
+            {
+                if (s_motor_x_ok != 0U)
+                {
+                    (void)Stepmotor_Stop(AIM_MOTOR_X);
+                }
+
+                if (s_motor_y_ok != 0U)
+                {
+                    (void)Stepmotor_Stop(AIM_MOTOR_Y);
+                }
+
+                s_lost_stopped = 1U;
+            }
+
+            return;
+        }
+
+#if (AIM_TASK4_KF_ENABLE != 0U)
+        ex_f = aim_kf_predict_only(&s_kf_ex,
+                                   dt,
+                                   AIM_TASK4_KF_Q_ACCEL,
+                                   AIM_TASK4_KF_LEAD_TIME_S);
+        ey_f = aim_kf_predict_only(&s_kf_ey,
+                                   dt,
+                                   AIM_TASK4_KF_Q_ACCEL,
+                                   AIM_TASK4_KF_LEAD_TIME_S);
+#else
+        ex_f = 0.0f;
+        ey_f = 0.0f;
+#endif
+    }
+
+    /* TASK4 仍然使用独立 PID 参数，但 dt 改为真实控制周期。 */
+    x_angle = PID_CalcDt(&s_pid_x, -ex_f, dt) * AIM_X_DIR_SIGN;
+    y_angle = PID_CalcDt(&s_pid_y, -ey_f, dt) * AIM_Y_DIR_SIGN;
+
+    x_angle = aim_limit_abs(x_angle, AIM_TASK4_OUT_MAX_DEG);
+    y_angle = aim_limit_abs(y_angle, AIM_TASK4_OUT_MAX_DEG);
+
+#if (AIM_TASK4_OUT_SLEW_ENABLE != 0U)
+    x_angle = aim_slew_rate(x_angle, s_last_x_angle, AIM_TASK4_OUT_SLEW_MAX_STEP);
+    y_angle = aim_slew_rate(y_angle, s_last_y_angle, AIM_TASK4_OUT_SLEW_MAX_STEP);
+#endif
+
+    x_angle = aim_apply_min_step_ex(x_angle, AIM_TASK4_MIN_STEP_DEG);
+    y_angle = aim_apply_min_step_ex(y_angle, AIM_TASK4_MIN_STEP_DEG);
+
+    s_last_x_angle = x_angle;
+    s_last_y_angle = y_angle;
+
+#if (AIM_DEBUG_ENABLE != 0U) && (AIM_PID_X_DEBUG_ENABLE != 0U)
+    {
+        static uint8_t s_task4_debug_div_cnt = 0U;
+        int32_t y_out_mdeg;
+
+        s_task4_debug_div_cnt++;
+        if (s_task4_debug_div_cnt >= AIM_PID_X_DEBUG_DIV)
+        {
+            s_task4_debug_div_cnt = 0U;
+            y_out_mdeg = (int32_t)(y_angle * 1000.0f);
+
+            usart_printf(AIM_DEBUG_UART,
+                         "[T4_Y] new=%d st=%d lost=%d dt_ms=%ld ref=%d target=%d out_mdeg=%ld\r\n",
+                         (int)has_new_frame,
+                         (int)status,
+                         (int)s_task4_lost_predict_cnt,
+                         (long)(dt * 1000.0f),
+                         (int)ref_y,
+                         (int)target_y,
+                         (long)y_out_mdeg);
+        }
+    }
+#endif
+
+    if ((x_angle != 0.0f) && (s_motor_x_ok != 0U))
+    {
+        x_cmd = Stepmotor_MoveTo(AIM_MOTOR_X,
+                                 x_angle,
+                                 AIM_TASK4_RPM,
+                                 AIM_ACCEL,
+                                 AIM_MOTOR_MODE);
+
+#if (AIM_DEBUG_ENABLE != 0U) && (AIM_MOVE_DEBUG_ENABLE != 0U)
+        AIM_OLD_DEBUG_PRINTF(
+                     "[T4] MoveX ret=%d angle=%.2f\r\n",
+                     (int)x_cmd,
+                     (double)x_angle);
+#endif
+    }
+
+    if ((y_angle != 0.0f) && (s_motor_y_ok != 0U))
+    {
+        y_cmd = Stepmotor_MoveTo(AIM_MOTOR_Y,
+                                 y_angle,
+                                 AIM_TASK4_RPM,
+                                 AIM_ACCEL,
+                                 AIM_MOTOR_MODE);
+
+#if (AIM_DEBUG_ENABLE != 0U) && (AIM_MOVE_DEBUG_ENABLE != 0U)
+        AIM_OLD_DEBUG_PRINTF(
+                     "[T4] MoveY ret=%d angle=%.2f\r\n",
+                     (int)y_cmd,
+                     (double)y_angle);
+#endif
+    }
+
     aim_debug_print(target_x,
                     target_y,
                     ref_x,

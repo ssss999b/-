@@ -225,6 +225,20 @@ static MainAimMode_t s_main_ui_mode = MAIN_AIM_MODE_FIND;
 static MainUiState_t s_main_ui_state = MAIN_UI_SELECT;
 static uint32_t s_main_ui_last_key_ms = 0U;
 
+/* TASK4 固定周期控制使用的最新视觉缓存。
+ * K230 串口来数据时只刷新这里；
+ * TIM2 只置 task4_control_flag；
+ * 主循环每到周期再调用 AimControl_Task4Periodic()。
+ */
+static int16_t s_task4_latest_target_x = 0;
+static int16_t s_task4_latest_target_y = 0;
+static int16_t s_task4_latest_ref_x = 0;
+static int16_t s_task4_latest_ref_y = 0;
+static int16_t s_task4_latest_ex = 0;
+static int16_t s_task4_latest_ey = 0;
+static int16_t s_task4_latest_status = 0;
+static uint8_t s_task4_has_new_frame = 0U;
+
 #if (MAIN_UART4_LOG_ENABLE != 0U)
 static const char *MainUi_ModeName(MainAimMode_t mode)
 {
@@ -411,6 +425,76 @@ static void Main_BootYHome(void)
 		             "[BOOT] Y HOME FAIL: TASK3 absolute Y may be invalid.\r\n");
 	}
 #endif
+}
+
+/* ============================================================
+ * TASK4 视觉缓存
+ * ============================================================ */
+static void Task4Vision_Clear(void)
+{
+	s_task4_latest_target_x = 0;
+	s_task4_latest_target_y = 0;
+	s_task4_latest_ref_x = 0;
+	s_task4_latest_ref_y = 0;
+	s_task4_latest_ex = 0;
+	s_task4_latest_ey = 0;
+	s_task4_latest_status = 0;
+	s_task4_has_new_frame = 0U;
+}
+
+static void Task4Vision_Save(int16_t target_x,
+                             int16_t target_y,
+                             int16_t ref_x,
+                             int16_t ref_y,
+                             int16_t ex,
+                             int16_t ey,
+                             int16_t status)
+{
+	s_task4_latest_target_x = target_x;
+	s_task4_latest_target_y = target_y;
+	s_task4_latest_ref_x = ref_x;
+	s_task4_latest_ref_y = ref_y;
+	s_task4_latest_ex = ex;
+	s_task4_latest_ey = ey;
+	s_task4_latest_status = status;
+	s_task4_has_new_frame = 1U;
+}
+
+static void Task4Periodic_UpdateFromFlag(void)
+{
+	uint8_t has_new_frame;
+
+	if (task4_control_flag == 0U)
+	{
+		return;
+	}
+
+	/* 先清 flag，避免主循环处理期间下一个 tick 丢失太久。 */
+	task4_control_flag = 0U;
+
+	if ((s_main_ui_state != MAIN_UI_RUNNING) ||
+	    (s_main_ui_mode != MAIN_AIM_MODE_TASK4))
+	{
+		/* 不在 TASK4 RUNNING 时不消费旧视觉控制，防止重新进入 TASK4 后拿旧数据追。 */
+		s_task4_has_new_frame = 0U;
+		return;
+	}
+
+	has_new_frame = s_task4_has_new_frame;
+
+	AimControl_Task4Periodic(s_task4_latest_target_x,
+	                         s_task4_latest_target_y,
+	                         s_task4_latest_ref_x,
+	                         s_task4_latest_ref_y,
+	                         s_task4_latest_ex,
+	                         s_task4_latest_ey,
+	                         s_task4_latest_status,
+	                         has_new_frame);
+
+	/* 一个控制周期只允许用一次“新帧”做测量更新；
+	 * 如果下个周期前没有新 K230 包，就进入预测保持。
+	 */
+	s_task4_has_new_frame = 0U;
 }
 
 /* ============================================================
@@ -618,6 +702,7 @@ static void Task3Search_Update(void)
 			s_main_ui_state = MAIN_UI_RUNNING;
 			s_main_ui_last_key_ms = now;
 
+			Task4Vision_Clear();
 			AimControl_SetTask4Mode(0U);
 			AimControl_Reset();
 			AimControl_SetLaserAllowed(1U);
@@ -666,6 +751,7 @@ static void MainUi_StartCurrentMode(void)
 	if (s_main_ui_mode == MAIN_AIM_MODE_FIND)
 	{
 		Task3Search_Cancel("START_FIND");
+		Task4Vision_Clear();
 
 		/* FIND：只跟踪，不允许激光。 */
 		AimControl_SetTask4Mode(0U);
@@ -678,6 +764,7 @@ static void MainUi_StartCurrentMode(void)
 	else if (s_main_ui_mode == MAIN_AIM_MODE_TASK2)
 	{
 		Task3Search_Cancel("START_TASK2");
+		Task4Vision_Clear();
 
 		/* TASK2：普通定点打靶。
 		 * 激光逻辑保持原来方式：对准稳定才开，偏离/丢失会关。
@@ -692,6 +779,7 @@ static void MainUi_StartCurrentMode(void)
 	else if (s_main_ui_mode == MAIN_AIM_MODE_TASK3)
 	{
 		/* TASK3：搜索到靶纸后延时自动切到 TASK2 RUNNING。 */
+		Task4Vision_Clear();
 		AimControl_SetTask4Mode(0U);
 		Task3Search_Start();
 
@@ -701,6 +789,7 @@ static void MainUi_StartCurrentMode(void)
 	else if (s_main_ui_mode == MAIN_AIM_MODE_TASK4)
 	{
 		Task3Search_Cancel("START_TASK4");
+		Task4Vision_Clear();
 
 		/* TASK4：发挥部分。
 		 *   - 不搜索，启动时靶纸应已在 K230 画面内；
@@ -734,6 +823,7 @@ static void MainUi_StartCurrentMode(void)
 static void MainUi_EnterSafe(const char *reason)
 {
 	Task3Search_Cancel(reason);
+	Task4Vision_Clear();
 	AimControl_Stop();
 
 	s_main_ui_state = MAIN_UI_SAFE;
@@ -793,6 +883,7 @@ static void MainUi_Update(uint8_t key_event)
 			 * 为安全起见，再执行一次 AimControl_Stop()。
 			 */
 			Task3Search_Cancel("BACK_SELECT");
+			Task4Vision_Clear();
 			AimControl_Stop();
 			s_main_ui_state = MAIN_UI_SELECT;
 			s_main_ui_last_key_ms = now;
@@ -1010,8 +1101,7 @@ int main(void)
 				 */
 				if ((s_main_ui_state == MAIN_UI_RUNNING) &&
 				    ((s_main_ui_mode == MAIN_AIM_MODE_FIND) ||
-				     (s_main_ui_mode == MAIN_AIM_MODE_TASK2) ||
-				     (s_main_ui_mode == MAIN_AIM_MODE_TASK4)))
+				     (s_main_ui_mode == MAIN_AIM_MODE_TASK2)))
 				{
 					AimControl_Update(target_x,
 					                  target_y,
@@ -1022,6 +1112,20 @@ int main(void)
 					                  status);
 				}
 				else if ((s_main_ui_state == MAIN_UI_RUNNING) &&
+				         (s_main_ui_mode == MAIN_AIM_MODE_TASK4))
+				{
+					/* TASK4 不再“来一帧就控制一次”。
+					 * 这里仅缓存最新视觉数据，由固定周期 flag 触发控制。
+					 */
+					Task4Vision_Save(target_x,
+					                 target_y,
+					                 ref_x,
+					                 ref_y,
+					                 ex,
+					                 ey,
+					                 status);
+				}
+				else if ((s_main_ui_state == MAIN_UI_RUNNING) &&
 				         (s_main_ui_mode == MAIN_AIM_MODE_TASK3))
 				{
 					Task3Search_OnVision(target_x,
@@ -1029,7 +1133,7 @@ int main(void)
 					                     ref_x,
 					                     ref_y,
 					                     ex,
-					                     ey,
+					                     ey, 
 					                     status);
 				}
 				else
@@ -1048,6 +1152,9 @@ int main(void)
 				/* 数据数量不对时，不控制电机。 */
 			}
 		}
+
+		/* TASK4 固定周期控制：TIM2 只置 flag，主循环里执行控制和串口发送电机命令。 */
+		Task4Periodic_UpdateFromFlag();
 
 		Task3Search_Update();
 	}

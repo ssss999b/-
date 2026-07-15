@@ -39,6 +39,16 @@ uint8_t USART_Packet_Count = 0;
 /* TIM2 分发：慢速外设任务 */
 volatile uint8_t print_task_flag = 0U;   /* 10Hz  串口打印 */
 
+/* TASK4 固定周期控制标志。
+ * ISR 只置位，主循环消费后清零。
+ */
+volatile uint8_t task4_control_flag = 0U;
+
+/* TASK4 控制周期。
+ * 15ms ≈ 66Hz。不要在 ISR 里算 PID / 电机串口命令。
+ */
+#define TASK4_CONTROL_PERIOD_MS  15U
+
 /* =========================================================================
  * Control_Task_GetMillis
  *
@@ -83,6 +93,7 @@ void Control_Task2_Callback(API_TIM_Id_t id)
 {
 	static uint8_t printf_tick = 0U;
 	static uint16_t sec_tick = 0U;
+	static uint8_t task4_tick = 0U;
 
 	if (id != API_TIM2)
 	{
@@ -94,6 +105,14 @@ void Control_Task2_Callback(API_TIM_Id_t id)
 
 	/* ---- 按键扫描：Key_Tick 内部会按 20ms 采样并消抖 ---- */
 	Key_Tick();
+
+	/* ---- TASK4 固定周期控制 tick：只置标志，不在中断里算 PID ---- */
+	task4_tick++;
+	if (task4_tick >= TASK4_CONTROL_PERIOD_MS)
+	{
+		task4_tick = 0U;
+		task4_control_flag = 1U;
+	}
 
 	/* ---- printf: 10Hz (每 100ms) ---- */
 	printf_tick++;

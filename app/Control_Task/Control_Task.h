@@ -13,7 +13,8 @@ extern uint8_t USART_Packet_Count;
 /*
  * 任务标志位 — 由定时器 ISR 置位，主循环轮询消费。
  */
-extern volatile uint8_t print_task_flag;  /* 10Hz 串口打印标志 */
+extern volatile uint8_t print_task_flag;    /* 10Hz 串口打印标志 */
+extern volatile uint8_t task4_control_flag;  /* TASK4 固定周期控制标志 */
 
 /*
  * 程序运行时间戳。

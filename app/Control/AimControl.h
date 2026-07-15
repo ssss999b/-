@@ -28,6 +28,23 @@ void AimControl_Update(int16_t target_x,
                        int16_t ey,
                        int16_t status);
 
+/* TASK4 固定周期预测控制。
+ *
+ * main.c 只缓存最新视觉数据，定时器只置 task4_control_flag；
+ * 主循环每到 TASK4 周期调用一次本函数。
+ *
+ * has_new_frame = 1：本周期内收到过新的 K230 数据。
+ * has_new_frame = 0：本周期内没有新数据，只允许卡尔曼预测。
+ */
+void AimControl_Task4Periodic(int16_t target_x,
+                              int16_t target_y,
+                              int16_t ref_x,
+                              int16_t ref_y,
+                              int16_t ex,
+                              int16_t ey,
+                              int16_t status,
+                              uint8_t has_new_frame);
+
 /* 手动清空 PID、滤波器和内部计数器。
  * 调用后会关闭激光。
  */
