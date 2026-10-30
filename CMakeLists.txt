@@ -87,16 +87,10 @@ endif()
 # =====================================================================
 
 # 应用层（app）：业务入口与任务调度。
+# 说明：main.c 被 F103 遥控器目标替换，飞控专用 app 文件已下沉到 F407/G3507 分支追加。
 set(APP_LAYER_SOURCES
     ${CMAKE_SOURCE_DIR}/A_Entry/main.c
-    ${CMAKE_SOURCE_DIR}/app/Control/Control.c
-    ${CMAKE_SOURCE_DIR}/app/Control/AimControl.c
     ${CMAKE_SOURCE_DIR}/app/My_Usart/My_Usart.c
-    ${CMAKE_SOURCE_DIR}/app/Control_Task/Control_Task.c
-    ${CMAKE_SOURCE_DIR}/app/PID/PID.c
-    ${CMAKE_SOURCE_DIR}/app/Filter/Filter.c
-    ${CMAKE_SOURCE_DIR}/app/IMU/IMU.c
-    ${CMAKE_SOURCE_DIR}/app/Altitude/Altitude.c
 )
 
 # 系统层（SYSTEM）：中断管理与板级系统封装。
@@ -182,6 +176,12 @@ if(RESOLVED_MCU_TARGET STREQUAL "F103")
         ${COMMON_INCLUDE_DIRS}
         ${BSP_COMMON_INCLUDE_DIRS}
         ${CMAKE_SOURCE_DIR}/BSP/NRF24L01
+        ${CMAKE_SOURCE_DIR}/BSP/Stepmotor
+        ${CMAKE_SOURCE_DIR}/BSP/Motor
+        ${CMAKE_SOURCE_DIR}/BSP/Dshot
+        ${CMAKE_SOURCE_DIR}/BSP/BMP280
+        ${CMAKE_SOURCE_DIR}/BSP/QMC5883P
+        ${CMAKE_SOURCE_DIR}/BSP/Buzzer
         ${CMAKE_SOURCE_DIR}/Core/STM32F103/inc
         ${CMAKE_SOURCE_DIR}/Core/STM32F103/f103_soft_i2c
         ${CMAKE_SOURCE_DIR}/Core/STM32F103/f103_soft_spi
@@ -201,6 +201,13 @@ if(RESOLVED_MCU_TARGET STREQUAL "F103")
         ${CMAKE_SOURCE_DIR}/Drivers/Drivers_STM32F1/Start/system_stm32f10x.c
         ${CMAKE_SOURCE_DIR}/Drivers/Drivers_STM32F1/Start/startup_stm32f103c8tx_gcc.c
     )
+
+    # F103 仅支持软件 I2C (bit-bang)，追加 i2c_soft 操作表（提供 g_i2c_hal_ops_soft）。
+    # f103_soft_i2c.c 已在 MCU_SOURCES 中，这里只补 API 层的 i2c_soft.c。
+    list(APPEND API_LAYER_SOURCES
+        ${CMAKE_SOURCE_DIR}/API/API_I2C/i2c_soft.c
+    )
+
 elseif(RESOLVED_MCU_TARGET STREQUAL "F407")
     set(TARGET_NAME OmniLayer_F407)
     set(LINKER_SCRIPT ${CMAKE_SOURCE_DIR}/Core/STM32F407/cmake/STM32F407VE_FLASH.ld)
@@ -209,6 +216,16 @@ elseif(RESOLVED_MCU_TARGET STREQUAL "F407")
     set(MCU_CPU_FLAGS -mcpu=cortex-m4 -mthumb)
     set(MCU_FPU_FLAGS -mfpu=fpv4-sp-d16 -mfloat-abi=hard)
     set(MCU_DEFINITIONS STM32F40_41xxx)
+    # F407 飞控专用 app 层（main.c 已按 F103 遥控器替换，飞控逻辑在此追加）
+    list(APPEND APP_LAYER_SOURCES
+        ${CMAKE_SOURCE_DIR}/app/Control/Control.c
+        ${CMAKE_SOURCE_DIR}/app/Control/AimControl.c
+        ${CMAKE_SOURCE_DIR}/app/Control_Task/Control_Task.c
+        ${CMAKE_SOURCE_DIR}/app/PID/PID.c
+        ${CMAKE_SOURCE_DIR}/app/Filter/Filter.c
+        ${CMAKE_SOURCE_DIR}/app/IMU/IMU.c
+        ${CMAKE_SOURCE_DIR}/app/Altitude/Altitude.c
+    )
     # F407 专属 BSP
     list(APPEND BSP_LAYER_SOURCES
         ${CMAKE_SOURCE_DIR}/BSP/BMP280/BMP280.c
@@ -280,6 +297,16 @@ elseif(RESOLVED_MCU_TARGET STREQUAL "G3507")
     set(MCU_CPU_FLAGS -mcpu=cortex-m0plus -mthumb)
     set(MCU_FPU_FLAGS)
     set(MCU_DEFINITIONS __MSPM0G3507__)
+    # G3507 飞控专用 app 层（main.c 已按 F103 遥控器替换，飞控逻辑在此追加）
+    list(APPEND APP_LAYER_SOURCES
+        ${CMAKE_SOURCE_DIR}/app/Control/Control.c
+        ${CMAKE_SOURCE_DIR}/app/Control/AimControl.c
+        ${CMAKE_SOURCE_DIR}/app/Control_Task/Control_Task.c
+        ${CMAKE_SOURCE_DIR}/app/PID/PID.c
+        ${CMAKE_SOURCE_DIR}/app/Filter/Filter.c
+        ${CMAKE_SOURCE_DIR}/app/IMU/IMU.c
+        ${CMAKE_SOURCE_DIR}/app/Altitude/Altitude.c
+    )
     list(APPEND BSP_LAYER_SOURCES
         # ${CMAKE_SOURCE_DIR}/BSP/TB6612/TB6612.c
     )
@@ -347,6 +374,9 @@ target_compile_options(${TARGET_NAME} PRIVATE
     ${MCU_FPU_FLAGS}
     -Wall
     -Wextra
+    # 配合 -Wl,--gc-sections 裁剪未引用代码（否则 NRF24L01_Data 等飞控残留会报未定义引用）
+    -ffunction-sections
+    -fdata-sections
 )
 
 target_link_options(${TARGET_NAME} PRIVATE

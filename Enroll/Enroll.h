@@ -25,7 +25,7 @@
 
 /* 默认MCU */
 #ifndef ENROLL_MCU_TARGET
-#define ENROLL_MCU_TARGET  ENROLL_MCU_F407
+#define ENROLL_MCU_TARGET  ENROLL_MCU_F103
 #endif
 
 /*
@@ -86,8 +86,15 @@ void Enroll_MPU6050_Register(void);
 /* NRF24L01 注册：登记 CE 控制引脚（PC5）。*/
 void Enroll_NRF24L01_Register(void);
 
+/* ADC 资源注册：登记板级 ADC 通道映射表（当前仅 F103 遥控器使用）。 */
+void Enroll_ADC_Register(void);
+
+/* OLED SPI 控制脚注册：登记 DC/RES 板级映射。 */
+void Enroll_OLED_RegisterSpiCtrl(void);
+
 #ifdef __cplusplus
 }
 #endif
 
 #endif /* __ENROLL_H */
+

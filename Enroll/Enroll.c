@@ -209,3 +209,41 @@ void Enroll_NRF24L01_Register(void)
 {
 	NRF24L01_RegisterCtrl(s_nrfCtrlTable, HW_NRF24L01_CTRL_COUNT);
 }
+
+/****************************** ADC 注册层 ************************/
+/* ADC 配置表：把 HW_ADC_MAP 展开成 API_ADC_Config_t（当前仅 F103 遥控器使用）。 */
+#if (ENROLL_MCU_TARGET == ENROLL_MCU_F103)
+#define ENROLL_ADC_ITEM(adcId, channel, port, pin) \
+	{ adcId, channel, port, pin },
+
+static const API_ADC_Config_t s_adcTable[] =
+{
+	HW_ADC_MAP(ENROLL_ADC_ITEM)
+};
+#undef ENROLL_ADC_ITEM
+#endif
+
+/* ADC 注册：登记板级 ADC 通道映射表。 */
+void Enroll_ADC_Register(void)
+{
+#if (ENROLL_MCU_TARGET == ENROLL_MCU_F103)
+	API_ADC_Register(s_adcTable, HW_ADC_COUNT);
+#endif
+}
+
+/****************************** OLED SPI 控制脚注册层 ************************/
+/* OLED SPI 模式 DC/RES 控制脚表（当前仅 F103 遥控器使用）。 */
+#if (ENROLL_MCU_TARGET == ENROLL_MCU_F103)
+static const OLED_SpiCtrlConfig_t s_oledSpiCtrlTable[] =
+{
+	{ HW_OLED_DC_PORT, HW_OLED_DC_PIN, HW_OLED_RES_PORT, HW_OLED_RES_PIN }
+};
+#endif
+
+/* OLED SPI 控制脚注册：登记 DC/RES 板级映射。 */
+void Enroll_OLED_RegisterSpiCtrl(void)
+{
+#if (ENROLL_MCU_TARGET == ENROLL_MCU_F103)
+	OLED_RegisterSpiCtrl(s_oledSpiCtrlTable, 1U);
+#endif
+}

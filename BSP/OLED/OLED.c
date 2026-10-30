@@ -86,7 +86,7 @@ static void OLED_AssertBus(void)
 	{
 		API_SPI_SelectBus(OLED_SPI_BUS);
 		API_SPI_SetSpeed(OLED_SPI_SPEED);
-		API_SPI_DelayOff();
+		API_SPI_DelayOn();   /* 不再全速裸奔，按 OLED_SPI_SPEED 的 1MHz 带延时走，避免 SSD1306 失步卡死 */
 	}
 	else
 	{

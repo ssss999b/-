@@ -19,9 +19,9 @@ extern "C" {
  *   MCU RX → 驱动板 T/B/L (TX)
  *   GND    → 驱动板 GND
  *
- * USART 映射：
+ * USART 映射（F103C8T6）：
  *   STEPMOTOR1 → USART1 (PA9/PA10), 协议地址=1
- *   STEPMOTOR2 → USART2 (PD5/PD6),  协议地址=1
+ *   STEPMOTOR2 → USART2 (PA2/PA3),  协议地址=1
  *
  * 注意：
  *   - Stepmotor_Init() 必须在 API_USART_Init() 之后调用
@@ -46,7 +46,7 @@ typedef enum
  * 电机 ID
  * ========================================================================= */
 #define STEPMOTOR1  1U  /* USART1 (PA9/PA10), 地址=1 */
-#define STEPMOTOR2  2U  /* USART2 (PD5/PD6),  地址=1 */
+#define STEPMOTOR2  2U  /* USART2 (PA2/PA3),  地址=1 */
 #define STEPMOTOR_MAX 2U
 
 /* =========================================================================

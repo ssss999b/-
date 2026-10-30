@@ -56,12 +56,15 @@ static void f103_spi_init_input(F103_GPIO_Regs_t *reg, uint32_t pin)
 	F103_GPIO_EnablePortClock(reg);
 	if (idx < 8U)
 	{
-		reg->CRL = (reg->CRL & ~(0xFUL << sh)) | (0x4UL << sh);
+		reg->CRL = (reg->CRL & ~(0xFUL << sh)) | (0x8UL << sh);
 	}
 	else
 	{
-		reg->CRH = (reg->CRH & ~(0xFUL << sh)) | (0x4UL << sh);
+		reg->CRH = (reg->CRH & ~(0xFUL << sh)) | (0x8UL << sh);
 	}
+	/* 上拉：MISO 空闲（CS=1）时从机三态，拉高避免浮空读到随机值。
+	 * 0x8 = 输入上拉，ODR 置 1 选上拉（与 F103_GPIO_InitInputPullUp 一致）。 */
+	reg->ODR |= pin;
 }
 
 /* ===================== HAL 接口实现 ===================== */

@@ -305,7 +305,7 @@ void NRF24L01_Init(void)
 	NRF24L01_WriteReg(NRF24L01_EN_AA, 0x3FU);
 	NRF24L01_WriteReg(NRF24L01_EN_RXADDR, 0x01U);
 	NRF24L01_WriteReg(NRF24L01_SETUP_AW, 0x03U);
-	NRF24L01_WriteReg(NRF24L01_SETUP_RETR, 0x03U);
+	NRF24L01_WriteReg(NRF24L01_SETUP_RETR, NRF24L01_SETUP_RETR_VALUE);
 	NRF24L01_WriteReg(NRF24L01_RF_CH, 0x02U);
 	NRF24L01_WriteReg(NRF24L01_RF_SETUP, 0x0EU);
 
@@ -385,6 +385,14 @@ uint8_t NRF24L01_Receive(void)
 
 	status = NRF24L01_ReadStatus();
 	config = NRF24L01_ReadReg(NRF24L01_CONFIG);
+
+	/* SPI 总线异常（MISO 悬空/被干扰读到 0xFF 或 0x00）：不可信，
+	 * 不触发重初始化，直接按“本周期无包”返回，避免 EMI 下反复
+	 * NRF24L01_Init() 造成掉链风暴。 */
+	if ((config == 0xFFU) || (config == 0x00U))
+	{
+		return 0U;
+	}
 
 	if ((config & 0x02U) == 0x00U)
 	{

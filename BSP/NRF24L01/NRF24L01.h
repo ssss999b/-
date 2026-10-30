@@ -19,6 +19,15 @@
 #define NRF24L01_TX_PACKET_WIDTH 32U
 #define NRF24L01_RX_PACKET_WIDTH 32U
 
+/*
+ * 自动重传参数（SETUP_RETR）：
+ *   ARD (bit[7:4]) = 0x1 → 重传间隔 500µs
+ *   ARC (bit[3:0]) = 0xA → 最多重发 10 次
+ * 原值 0x03（250µs×3 次）对电机 EMI 太敏感，准备起飞时易 MAX_RT(无 ACK)。
+ * 遥控器端 main.c 的自检流程会写 0xA1 回读后再恢复到此值，故两处需保持一致。
+ */
+#define NRF24L01_SETUP_RETR_VALUE 0x1AU
+
 /* NRF24L01 模块专有控制脚（仅 CE，IRQ 暂不引入）。 */
 typedef struct
 {

@@ -231,7 +231,11 @@
 
 /* 调试串口 */
 #define AIM_DEBUG_ENABLE         1U
+#if (ENROLL_MCU_TARGET == ENROLL_MCU_F103)
+#define AIM_DEBUG_UART           USART3
+#else
 #define AIM_DEBUG_UART           USART4
+#endif
 #define AIM_DEBUG_DIV            5U
 
 /* MoveTo 高频调试：

@@ -10,9 +10,22 @@
  */
 
 #include "StepMotor.h"
-#include "usart.h"    /* F407_USART_View_t, USART1/2 */
+#include "usart.h"    /* USART1/2 寄存器视图 */
 #include "Delay.h"    /* Delay_us, Delay_ms */
 #include "Enroll.h"   /* ENROLL_MCU_TARGET */
+
+/*
+ * 平台无关的 USART 寄存器视图别名：
+ * F103_USART_View_t / F407_USART_View_t 结构体布局完全一致
+ * (SR/DR/BRR/CR1/CR2/CR3/GTPR)，用统一别名解耦 BSP 与具体 MCU。
+ */
+#if (ENROLL_MCU_TARGET == ENROLL_MCU_F103)
+typedef F103_USART_View_t USART_View_t;
+#elif (ENROLL_MCU_TARGET == ENROLL_MCU_F407)
+typedef F407_USART_View_t USART_View_t;
+#else
+#error "Stepmotor 仅支持 F103/F407。"
+#endif
 
 /* ═══════════════════════════════════════════════════════════════
  * NVIC 寄存器
@@ -25,7 +38,7 @@
 typedef struct
 {
 	uint8_t             id;       /* 逻辑电机 ID (MOTOR_ID_1 / MOTOR_ID_2)  */
-	F407_USART_View_t  *usart;    /* 所在 USART 端口                      */
+	USART_View_t       *usart;    /* 所在 USART 端口                      */
 	uint32_t            irqNum;   /* NVIC 中断号                          */
 	uint8_t             addr;     /* 协议地址（独立总线可相同，默认 1）    */
 } MotorMap_t;
@@ -61,7 +74,7 @@ static void nvic_disable(uint32_t irq)
  * ═══════════════════════════════════════════════════════════════ */
 
 /* 阻塞发送 1 字节 */
-static void uart_tx(F407_USART_View_t *u, uint8_t b)
+static void uart_tx(USART_View_t *u, uint8_t b)
 {
 	while ((u->SR & USART_SR_TXE) == 0U) {}
 	u->DR = b;
@@ -69,14 +82,14 @@ static void uart_tx(F407_USART_View_t *u, uint8_t b)
 }
 
 /* 发送字节数组 */
-static void send_buf(F407_USART_View_t *u, const uint8_t *buf, uint8_t len)
+static void send_buf(USART_View_t *u, const uint8_t *buf, uint8_t len)
 {
 	uint8_t i;
 	for (i = 0U; i < len; i++) uart_tx(u, buf[i]);
 }
 
 /* 带超时的接收字节数组。返回 MOTOR_OK 或 MOTOR_ERR_TIMEOUT。 */
-static MotorErrCode recv_buf(F407_USART_View_t *u, uint8_t *buf, uint8_t len,
+static MotorErrCode recv_buf(USART_View_t *u, uint8_t *buf, uint8_t len,
                              uint32_t ms)
 {
 	uint8_t  i = 0U;
@@ -157,13 +170,9 @@ void Stepmotor_Init(void)
 {
 	uint8_t i;
 
-#if (ENROLL_MCU_TARGET != ENROLL_MCU_F407)
-	return;
-#endif
-
 	for (i = 0U; i < STEPMOTOR_MAX; i++)
 	{
-		F407_USART_View_t *u = s_map[i].usart;
+		USART_View_t *u = s_map[i].usart;
 
 		if (u == 0) continue;
 
